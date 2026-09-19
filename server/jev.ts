@@ -19,6 +19,13 @@ export async function ask<Q extends Questions>(state: EntryType, questions: Q, o
   return { model: res.model, ms, usage: res.usage, answers: res.answers };
 }
 
+// A cheap GET on the same client. It opens (or keeps open) the pooled connection that decide() reuses.
+export async function warm(): Promise<number> {
+  const t = performance.now();
+  await getClient().models.list();
+  return Math.round(performance.now() - t);
+}
+
 // Safe to return to the browser: never includes headers or the key.
 export function describeError(err: unknown): { status?: number; error: string } {
   if (err instanceof Error) {

@@ -12,6 +12,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; }
 a { color: inherit; }
 h1 { font-size: 1.7rem; margin: 0 0 1rem; }

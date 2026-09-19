@@ -1,0 +1,54 @@
+/* All overlay styles live here. Visual design is directed through these variables. */
+:host {
+  --t-ink: #14151a;
+  --t-paper: #ffffff;
+  --t-line: #c9ccd6;
+  --t-accent: #3b5bdb;
+  --t-ok: #1f7a4d;
+  --t-warn: #b35c00;
+  --t-font: 13px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --t-mono: 12px/1.35 ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  all: initial;
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  pointer-events: none; /* the page stays clickable; only panels take pointer events */
+  font: var(--t-font);
+  color: var(--t-ink);
+}
+
+.bar {
+  position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px;
+  width: min(640px, calc(100vw - 28px));
+  padding: 6px 8px; border: 1px solid var(--t-line); border-radius: 10px;
+  background: var(--t-paper); box-shadow: 0 6px 24px rgb(0 0 0 / 0.18);
+  pointer-events: auto;
+}
+.pill { white-space: nowrap; padding: 2px 8px; border-radius: 999px; background: #eef1fb; color: var(--t-accent); font-weight: 600; }
+.cmd { flex: 1; min-width: 0; font: inherit; padding: 5px 8px; border: 1px solid var(--t-line); border-radius: 6px; }
+.cmd:focus { outline: 2px solid var(--t-accent); outline-offset: 0; }
+.heard { max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #555a66; }
+.heard.ok { color: var(--t-ok); }
+.heard.unsure { color: var(--t-warn); }
+
+.ring {
+  position: fixed; border: 3px solid var(--t-accent); border-radius: 8px;
+  box-shadow: 0 0 0 4px rgb(59 91 219 / 0.25); opacity: 0; transition: opacity 0.9s ease-out;
+}
+.ring.on { opacity: 1; transition: none; }
+
+.inspector {
+  position: fixed; top: 10px; right: 10px; width: min(560px, calc(100vw - 20px)); max-height: calc(100vh - 80px);
+  overflow: auto; padding: 8px 10px; border: 1px solid var(--t-line); border-radius: 8px;
+  background: var(--t-paper); box-shadow: 0 6px 24px rgb(0 0 0 / 0.18); pointer-events: auto;
+}
+.inspector[hidden] { display: none; }
+.inspector h2 { font: inherit; font-weight: 700; margin: 0 0 6px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.inspector button { font: inherit; padding: 2px 8px; border: 1px solid var(--t-line); border-radius: 5px; background: #f5f6fa; cursor: pointer; }
+.inspector table { width: 100%; border-collapse: collapse; margin: 0 0 8px; font: var(--t-mono); }
+.inspector th, .inspector td { text-align: left; vertical-align: top; padding: 2px 6px 2px 0; border-bottom: 1px solid #eceef3; }
+.inspector th { font-weight: 600; white-space: nowrap; }
+.inspector .num { text-align: right; white-space: nowrap; }
+.inspector .used td { background: #eef6f0; }
+.inspector p { margin: 0 0 6px; font: var(--t-mono); overflow-wrap: anywhere; }

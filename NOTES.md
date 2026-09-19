@@ -34,6 +34,8 @@ Decisions agreed with Sean (SPEC.md is patched to match):
 
 ## 2026-09-19 · M0: scaffold, handshake, store
 
+Started about 13:33, committed 13:47 EDT (about 14 min against a 20 min box).
+
 **Built**
 
 - Scaffold: Vite 8 (root `store/`), TypeScript 7 strict, Express 5 under `tsx watch --env-file=.env`, `concurrently` for `npm run dev`. Vite proxies `/api` to :8787.
@@ -59,3 +61,64 @@ Decisions agreed with Sean (SPEC.md is patched to match):
 
 - Nothing blocking. `npm install` pulled current majors (Vite 8, TypeScript 7, Express 5, zod 4, vitest 5); all worked unchanged.
 - No Jev wording changes yet beyond the health question.
+
+## 2026-09-19 · M1: see and act
+
+Started 13:49, finished 14:07 EDT (about 18 min against a 35 min box).
+
+**Built**
+
+- `shared/`: `ordinals.ts` (half-visible placement, visible-first ordinals), `spans.ts` (word spans, cap 200), `candidates.ts` (which rows each head may pick, row text, select labels `e12_o3`), `policy.ts` (`resolve()`, rules 1 to 5 and 8), `questions.ts` (kind, operation, three target heads, typed_span).
+- `server/decide.ts`: zod-validated `/api/decide`. One Jev request carries every head. 2500 ms timeout, no retry on the single leash. `/api/warm` opens the connection ahead of a decision. One SDK client is reused for the life of the server.
+- `agent/`: `name.ts` (accessible name, role, group; pure, tested under jsdom), `snapshot.ts` (one pass, about 1 ms on the store), `execute.ts` (scrolls an off-screen or covered target to the centre, re-checks it is reachable, native value setter, `form.requestSubmit()` for search fields, settle 120 / 800 ms), `loop.ts` (the one loop, leash of one step), `ui/` (shadow-root overlay with `pointer-events: none`, command bar on `/`, ring, plain-table inspector on `i` with the label-style toggle).
+- `scripts/bench-decide.ts`: latency and accuracy bench against the running server.
+- 46 unit tests: policy, spans, ordinals, naming. No network.
+
+**Acceptance (typed into the command bar, 1280 × 800)**
+
+| Command | Result | Winning row / note | t3 − t0 |
+|---|---|---|---|
+| scroll down | pass | SCROLL_DOWN conf 1.00 | 493 ms (first call, cold connection) |
+| open the second one (after the scroll) | **pass after a fix**, see below | `e126 · link · Tidewater Boardwalk Tan sneakers $58 · Results · second visible (item 10 of 24 in Results)`, conf 0.99. It is the second visible card, item 10 of the list, checked against an independent DOM calculation. | 163 ms |
+| go back | pass | GO_BACK conf 0.98; listing and scroll position restored | 348 ms (cold) |
+| check white | pass | `checkbox · White · unchecked · Colour · off-screen above`, conf 0.95; scrolled into view, then clicked; 8 results | 213 ms |
+| sort by price low to high | pass | select_target `e277_o1` conf 1.00; prices ascending | 391 ms (cold) |
+| search for running shoes | pass | TYPE conf 0.73, searchbox conf 0.97, typed_span "running shoes" conf 0.99; 7 results | 314 ms |
+
+The inspector shows model id, label style, rows, tokens, t0 to t3 with the Jev share, settle, and per head: choice, confidence, top probability and top three. Heads the policy read are shaded. The toggle switches label style for the next decision; the key scenario also passes under `ids` (same row, conf 0.98, 3,723 tokens against 5,363).
+
+**What broke, and the wording / state changes**
+
+1. **"open the second one" opened the wrong product.** First format: visible rows said `second visible (tenth of 24 in Results)`, off-screen rows said `off-screen above (second of 24 in Results)`. Jev chose the off-screen row at 0.76 and gave the right one 0.06. It matched the literal words "second of 24". Fix, in state and wording, not thresholds: the collection position is now in digits (`item 10 of 24`), so the word "second" appears on exactly one row, and the click question now says that a position word in `utterance` means the element described with that word followed by "visible". After the fix: 0.99 on the right row under both label styles. A clean example of Jev's literal reading, and of a documented weakness (numbers) used on purpose.
+2. **kind misreads "search for running shoes" as TASK** (0.95). Not routed on until M2. I tightened ACTION ("typing or searching for the exact words given") and TASK ("leaves the steps to the assistant"); TASK fell to 0.51 but still wins. Open item for M2, where kind starts to matter.
+3. Store bug: `#load-more { display: block }` beat the `hidden` attribute. Added `[hidden] { display: none !important }`.
+4. Pressing `/` with the command bar already focused typed a slash. Now swallowed when the bar is empty.
+5. A label was briefly parsed (`o3` to index 3). Replaced with a map from select label to `<option>`, so labels are only ever looked up.
+
+**Latency: t2 − t1, the Jev call measured on the server, p50 of 10 calls each, connection warm**
+
+| Rows | Label style | p50 | min | max | Input tokens | Operation | Target | Span |
+|---|---|---|---|---|---|---|---|---|
+| 40 | described | 225 ms | 185 | 268 | 3,592 | 10/10 | 6/6 | 1/1 |
+| 40 | ids | 201 ms | 133 | 284 | 2,592 | 10/10 | 6/6 | 1/1 |
+| 80 | described | 207 ms | 156 | 303 | 5,720 | 10/10 | 6/6 | 1/1 |
+| 80 | ids | 177 ms | 153 | 237 | 3,856 | 10/10 | 6/6 | 1/1 |
+| 120 | described | 208 ms | 171 | 247 | 9,054 | 10/10 | 6/6 | 1/1 |
+| 120 | ids | 220 ms | 150 | 261 | 5,744 | 10/10 | 6/6 | 1/1 |
+
+An earlier run of the same bench gave p50s of 210, 197, 224, 236, 220 and 210 ms. Rows are synthetic but shaped like the listing; the six commands rotate; "Target" checks the head that carries the action, including the second visible card.
+
+Connection warm-up, 80 rows, described, each call after 8 s idle: **cold p50 366 ms** (366, 403, 361, 308, 387); **warmed first p50 187 ms** (191, 187, 176, 180, 192).
+
+What this says:
+
+- **The 600 ms target is met.** t3 − t0 is the Jev call plus about 5 ms (snapshot 1 ms, act 1 to 2 ms, local proxy). Warm: about 200 to 260 ms. Cold: about 350 to 500 ms.
+- **Row count and label style are not latency levers.** 40 to 120 rows and either style all land within run-to-run noise of each other, which fits the docs' claim that questions run in parallel over one ingested state. `ids` saves about a third of the input tokens and scored the same here, so it is the cheaper choice if accuracy holds on real pages.
+- **The connection is the lever: about 180 ms.** Node closes an idle connection after a few seconds. The agent now calls `/api/warm` (a cheap `GET /v1/models` on the same client) when the command bar takes focus and while the user types, at most every 3 s. In M2 the same call should fire on the first interim transcript. In my automated runs the command was typed instantly, so warm-up and decide overlapped and several calls still paid the cold price; a human typing or speaking gives it a head start.
+- The floor from this machine is about 150 to 200 ms round trip, above the docs' "about 100 ms".
+
+**Surprises about Jev**
+
+- Speculative heads behave well: with "scroll down", click_target says `none` at 0.96; with "open the second one", typed_span says `(none)` at 0.90.
+- Operation TYPE is the least confident of the six (0.57 to 0.73): CLICK on the "Running" category link is a fair rival for "search for running shoes".
+- Confidence tracked the top probability closely on peaked heads here (0.99 / 1.00, 0.75 / 0.76), and sat lower on spread ones (0.35 confidence for a 0.51 top).

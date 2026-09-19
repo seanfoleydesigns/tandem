@@ -1,7 +1,8 @@
 import express from 'express';
 import { HEALTH_STATE, healthQuestions } from '../shared/questions';
-import type { HealthResponse } from '../shared/types';
-import { ask, describeError } from './jev';
+import type { DecideRequest, HealthResponse } from '../shared/types';
+import { decide, decideRequest } from './decide';
+import { ask, describeError, warm } from './jev';
 
 const PORT = 8787;
 const app = express();
@@ -17,6 +18,28 @@ app.get('/api/health', async (_req, res) => {
   } catch (err) {
     const body: HealthResponse = { ok: false, ...describeError(err) };
     res.status(502).json(body);
+  }
+});
+
+// Opens the connection to TypeSafe ahead of the first decision, so it does not pay for the handshake.
+app.post('/api/warm', async (_req, res) => {
+  try {
+    res.json({ ok: true, ms: await warm() });
+  } catch (err) {
+    res.status(502).json({ ok: false, ...describeError(err) });
+  }
+});
+
+app.post('/api/decide', async (req, res) => {
+  const parsed = decideRequest.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') });
+    return;
+  }
+  try {
+    res.json(await decide(parsed.data as DecideRequest));
+  } catch (err) {
+    res.status(502).json({ ok: false, ...describeError(err) });
   }
 });
 

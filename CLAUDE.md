@@ -20,9 +20,9 @@ Read `SPEC.md` in full before doing anything. It is the source of truth for what
 - One milestone at a time, in the order given in `SPEC.md`.
 - Before each milestone: post a short plan (files, approach, risks) and wait for my OK.
 - After each milestone: run its acceptance checks, report results honestly including what fails, then commit as `M<n>: <summary>`.
-- Keep `NOTES.md` current. One timestamped entry per milestone: what was built, what broke, what changed in the Jev wording and why, and anything surprising about Jev's behaviour. I will use these notes to explain how the project was built.
+- Keep `NOTES.md` current. One timestamped entry per milestone, with its start and end time: what was built, what broke, what changed in the Jev wording and why, and anything surprising about Jev's behaviour. I will use these notes to explain how the project was built.
 - If the spec is ambiguous, ask one concise question instead of guessing.
-- Ask before adding a dependency. Allowed without asking: vite, typescript, tsx, express, @typesafe-ai/sdk, zod, vitest, jsdom, concurrently, and (M4) one LLM SDK.
+- Ask before adding a dependency. Allowed without asking: vite, typescript, tsx, express, @typesafe-ai/sdk, zod, vitest, jsdom, concurrently, @types/node, @types/express, and (M4) one LLM SDK.
 
 ## Code conventions
 

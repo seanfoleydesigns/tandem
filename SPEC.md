@@ -136,7 +136,7 @@ type ElementRow = {
   name: string;        // accessible name, 80 chars max: aria-label, labelledby, <label>, alt/title, placeholder, then text
   state?: string;      // "checked" | "unchecked" | "selected: Price low to high" | "value: …" | "expanded"
   group?: string;      // fieldset legend, ARIA group label, or nearest section heading, e.g. "Size"
-  ordinal?: string;    // "second visible (tenth of 24 in Results)", computed in code for repeated siblings
+  ordinal?: string;    // "second visible (item 10 of 24 in Results)", computed in code for repeated siblings
   offscreen?: 'above' | 'below';   // less than half of the element is inside the viewport
   required?: boolean;
   options?: { id: string; label: string; selected: boolean }[];   // native <select> only
@@ -153,7 +153,7 @@ type Snapshot = {
 
 `group` and `ordinal` matter. `group` is what lets the agent ask "Which size?" with the right chips. `ordinal` is what makes "open the second one" a text match instead of a counting problem, which Jev cannot do.
 
-**Ordinals follow what the user can see.** After "scroll down", "open the second one" means the second item visible in the viewport, not #2 of the whole list. The primary ordinal counts only on-screen siblings (at least half visible), in reading order; the position in the whole collection is secondary: `"second visible (tenth of 24 in Results)"`. Off-screen siblings get only the collection position: `"off-screen below (fourteenth of 24 in Results)"`. Ordinals are written in words, because numeric forms are a documented weak spot for Jev. Unit tested.
+**Ordinals follow what the user can see.** After "scroll down", "open the second one" means the second item visible in the viewport, not #2 of the whole list. The primary ordinal counts only on-screen siblings (at least half visible, not counting the strip under a sticky header), in reading order; the position in the whole collection is secondary: `"second visible (item 10 of 24 in Results)"`. Off-screen siblings get only the collection position: `"off-screen below (item 14 of 24 in Results)"`. Only the visible ordinal is written in words; the collection position is in digits **on purpose**. Jev matches words literally: with `"off-screen above (second of 24 in Results)"` in state, "open the second one" picked that row at 0.76 (M1). With digits, the word "second" appears on exactly one row. Ordinals are given to repeated collections of links, buttons, tabs, menu items or options (three or more siblings) inside the page's main content, not to filter groups. Unit tested.
 
 ## 6. Decide (one Jev request per cycle)
 
