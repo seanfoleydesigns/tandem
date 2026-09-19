@@ -27,3 +27,13 @@ describe('pickOneOrTwo', () => {
     expect(pickOneOrTwo('open the second one please')).toBeUndefined();
   });
 });
+
+describe('pickYesOrNo: the reply to a confirmation, handled in code', () => {
+  it('reads yes and no in the ways people say them', async () => {
+    const { pickYesOrNo } = await import('../shared/speech');
+    expect(['yes', 'Yes.', 'yeah', 'yes please', 'go ahead', 'do it'].map(pickYesOrNo)).toEqual([true, true, true, true, true, true]);
+    expect(['no', 'No!', 'nope', 'no thanks', "don't", 'never mind'].map(pickYesOrNo)).toEqual([false, false, false, false, false, false]);
+    expect(pickYesOrNo('scroll down')).toBeUndefined();
+    expect(pickYesOrNo('yes and also open the cart')).toBeUndefined();
+  });
+});

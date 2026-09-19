@@ -232,3 +232,47 @@ Started 14:42, finished 14:59 EDT (about 17 min against a 50 min box). Checked w
 - In drive mode the deny-list does not apply, as specified: "get me checked out" was routed as an ACTION and clicked Checkout (the demo dialog opened). If "it never buys" should hold in drive mode too, that is a one-line change; Sean's call.
 - If the second task starts on a page where Size is already set from the first answer, memory has nothing to apply and no memory chip appears. The run above started from a fresh listing.
 - `ids` label style was not re-tested on the task leash.
+
+## 2026-09-19 · M3.1: behaviour fixes from Sean's real-voice run
+
+Started 15:10, finished 15:22 EDT (about 12 min). Checked with the dev simulator.
+
+**What Sean's run found.** (1) Filters piled up across tasks: Brown, Grey and White all checked, plus a leftover Brand: Arco and Size 10.5, on the Running page, giving 0 results. The agent only ever added. (2) "Open a product, pick a size and then add to cart" was routed ACTION at 0.97 and then ignored.
+
+**Built**
+
+- Clean slate (`shared/slate.ts`, `/api/slate`, `cleanSlate()` in the loop). Once at task start, one request: *refines*, *names a product*, and one Noul per filter option that is on. Refinement keeps everything; a new search switches off what the goal does not ask for, except a saved preference, with one chip ("Cleared 3 old filters"); anything else leaves the page alone. "Kept your saved size: 10.5" when the preference is already set. The snapshot gained a `wide` option so filters scrolled out of view are still seen.
+- kind reworded: ACTION is *exactly one* action; TASK also covers an utterance that lists several actions one after another.
+- Never silent: `Ignore` now carries `why` (`not_found`, `unsure`, `not_for_me`), and the pipeline says it in the capsule and by voice. `shared/notices.ts` reads the page's result notice for "No matches with these filters."
+- Drive-mode deny-list is a confirmation: a `Confirm` resolution, a "Click Checkout?" card with Yes and No, and `pickYesOrNo()` in code. Task mode is still a hard hand-back.
+- "Narrow by" answers are saved only when the group's *personal* Noul reaches `SAVE_MIN` 0.7; the pipeline keeps the latest personal score per group from the task's decide responses. After a Narrow-by answer the remaining chips are offered again.
+- Saved preferences are now tried once per group **per page**, not per task: the listing's Size filter and a product page's Size selector are different controls.
+- On the task leash, when several things to open fit equally and the goal does not say which ("open a product"), the agent takes the first.
+- 116 unit tests (added: slate planning, yes / no, Ignore reasons, result notices).
+
+**Acceptance, by simulated voice**
+
+| Check | Result |
+|---|---|
+| Clean slate: Running + White, Grey, Brown, Arco, 10.5 (saved) → "find me white sneakers" | Trail: "Kept your saved size: 10.5", "Cleared 3 old filters", "Opened Sneakers". Ends on `/?category=sneakers&colour=white&size=10.5`, 4 results, DONE 0.97, 1.8 s. Passed on the third attempt; see below. |
+| Then "only the ones under a hundred dollars" | Routed as one ACTION: Price: Under $75 added, White and 10.5 kept. Phrased as a task ("show me only the ones…"): refinement, nothing cleared, same result. |
+| "Open a product, pick a size and then add to cart" | TASK. Saved size on the listing, first product opened, saved size on the product page with no question, Add to cart clicked (the goal asks for it), "Added 1 × size 10.5 to your cart", DONE. 2.1 s. |
+| Never silent | "open the purple elephant" (STUCK 0.90) and "sort by customer rating" (select `none` 1.00): "I can't find that on this page.", spoken. "flibber the wug" and "yeah so anyway I told him no" (NOT_FOR_ME 0.80 and 0.99): named in the capsule, not spoken. "find me red boots" ends on 0 results: "No matches with these filters. Your turn." |
+| Confirm before spending | "check out" → "Click Checkout?" Yes / No, pill "Waiting for you". "no" → "Left Checkout alone." "yes" → clicked, trail "Clicked Checkout (you confirmed)". |
+| What is remembered | Narrow by Size, "thirteen" → "Size: 13 (saved)". Brand answers are not saved (personal 0.02). |
+
+**What broke, and the wording changes**
+
+1. **Wording probe first, as asked** (`scripts/probe-slate.ts`, seven goals). *refines* as Sean worded it: 0.08, 0.08, 0.25 for new searches, 0.72 to 0.90 for refinements, but 0.55 for "I need grey running shoes from Arco", because two set filters happened to match the goal. Its mirror, "`goal` names a kind of product to look for", scored 0.93 to 0.95 for new searches and 0.13 to 0.62 for refinements. Requiring `refines ≥ 0.6` and `refines` above the mirror gets all seven right with a margin of 0.10 or more; the single threshold leaves 0.05. The per-option sentence as worded was crisp: 0.87 to 0.93 for options the goal asks for, 0.05 or less otherwise.
+2. **The slate cleared the filters but the task ended on Running, not Sneakers.** The stale category is a link with `aria-current`, not a control, so the slate cannot clear it, and Jev chose DONE (0.79, below its usual 0.98) with the Sneakers link at only 0.35. DONE never told it to check the kind of product. Fix in wording: DONE now says the kind of product the goal names must be the current category, and it is not done while the page shows a different one; CLICK names the category link as a valid next step.
+3. **Then the fit check rejected the Sneakers link.** With the operation right (CLICK 0.80), the target was torn between the category and opening a white running shoe (0.40), so it went to the fit check, which asked whether the *utterance refers to* the element. A goal does not refer to the Sneakers link; clicking it is just a useful step. The task leash now has its own fit wording ("would clicking this page element be a useful next step toward that goal… answer no for an element whose state already matches the goal"), and click_target says to choose a filter or category before a single product unless the goal asks to open, view or buy one. After both: DONE 0.97 on Sneakers.
+4. The compound command first cleared the White filter before doing anything, because a list of actions is neither a refinement nor a search. The slate now clears only when *names a product* is at least 0.5.
+5. On the product page it asked "Which size?" although 10.5 was saved: memory was tried once per group per task and had been used on the listing. Now once per group per page.
+6. A regex I injected through a shell script lost its backslashes (`\b` became a backspace character). It is now `shared/notices.ts` with tests, and I scanned the source for stray control characters (none left).
+
+**Decisions taken, worth a second look**
+
+- A confident NOT_FOR_ME is shown but not spoken. Saying "Didn't catch that." to every sentence of a side conversation would be worse than silence. A weak NOT_FOR_ME (confidence under 0.5) is treated as "Didn't catch that."
+- No new gate on kind confidence. The bias toward ACTION depends on letting a weak TASK or DICTATION fall through to the operation head, and the operation's own confidence already produces "Didn't catch that."
+- "Take the first" on the task leash applies to things to open, never to a control group. In the hero scenario Jev chooses DONE at 0.97 to 0.99 and does not try to open a product, but this is the rule to watch.
+- Limits of the clean slate: a leftover radio that is not a saved preference cannot be clicked off, and a search query in the URL is not a control either.

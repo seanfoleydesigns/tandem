@@ -205,11 +205,22 @@ Send only what the questions need. Keep page text out of state unless it is a ro
 3. Take the target head for the chosen operation. A choice of `none` counts as low confidence.
 4. **Ambiguity rule.** If the top probability is under `AMBIG_TOP` and the candidates covering 80% of the probability mass share one `group`: task mode asks about that group; drive mode disambiguates ("say one or two"). This is the core idea: uncertainty becomes a question. In practice Jev rarely splits a Choice like this, so rule 5 and the fit check do most of this work.
 5. Other low-confidence targets go to the **fit check** on both leashes. Drive mode: two or more fit, badge the best two; one fits, act; none, ignore. Task mode: several fitting options inside one unset control group is an Ask about that group; one fits, act (after the deny-list); anything else is STUCK.
-6. **Deny-list (task mode).** Never click anything whose name matches buy, purchase, place order, checkout, pay, confirm, subscribe. "Add to cart" is allowed only if the goal literally asks for it. Otherwise hand back with "This one's yours."
+6. **Deny-list.** Anything whose name matches buy, purchase, place order, checkout, pay, confirm, subscribe; and "Add to cart" unless the goal or utterance literally asks for it. **Task mode:** never click it; hand back with "This one's yours." **Drive mode:** confirm instead of block. Speech can be misheard, so anything that spends money needs a second, explicit yes: a confirm card ("Click Checkout?" with Yes and No chips), where "yes" and "no" are handled in code and any other utterance withdraws the confirmation and runs as a new command.
 7. **Loop detection.** Same operation and target three times, or three actions with no DOM change, is STUCK.
 8. Otherwise act.
 
 Thresholds in `shared/config.ts`: `OP_MIN 0.5`, `TARGET_MIN 0.75` (raised from 0.5 in M2), `AMBIG_TOP 0.55`, `TASK_MIN 0.7`, `DICTATION_MIN 0.6`, `ASK_MIN 0.7`, `FIT_MIN 0.5`, `MAX_STEPS 25`, `MAX_TASK_MS 60000` (time spent waiting for the user does not count). Tune them with the inspector.
+
+**Never silent (M3.1).** In drive mode an Ignore carries a reason and says it, in the capsule and by voice when sound is on: "I can't find that on this page." when the operation is STUCK, the target is `none`, or the fit check finds nothing; "Didn't catch that." when the operation confidence is low, no text to type is clear, or a weak NOT_FOR_ME (confidence under 0.5) may have been a command. A confident NOT_FOR_ME is named in the capsule but not answered aloud, so the agent does not talk over a conversation it is not part of. At hand-back code reads the page's result notice: if it shows no results, the agent says "No matches with these filters. Your turn."
+
+**Clean slate (M3.1).** A new search starts from the filters the goal asks for, not from what the last task left behind. Once at task start, if any filter option is on, one request (`/api/slate`) asks: *refines*, "`goal` narrows or adjusts the results currently shown (for example 'only the cheap ones'), and does not ask for a different kind of product"; *names a product*, "`goal` names a kind of product to look for, such as shoes, boots, sneakers or sandals"; and one Noul per option that is on, "`goal` asks for {group}: {option}". Code decides:
+
+- **Refinement** (`refines ≥ REFINES_MIN` 0.6 and `refines` beats *names a product*): keep everything.
+- **New search** (not a refinement, and *names a product* ≥ 0.5): switch off every set option the goal does not ask for (`< KEEP_MIN` 0.5), except one that equals a saved preference. One trail chip: "Cleared 3 old filters".
+- **Neither**, such as a list of actions: leave the page as it is.
+- A saved preference that is already set to its saved value gets a chip with no action: "Kept your saved size: 10.5".
+
+Probe numbers (`scripts/probe-slate.ts`): *refines* 0.08 to 0.55 for new searches and 0.72 to 0.90 for refinements; *names a product* 0.93 to 0.95 against 0.13 to 0.62; an option the goal asks for 0.87 to 0.93, any other 0.05 or less. Two limits: a radio cannot be switched off by clicking it, so a leftover radio that is not a saved preference stays; and a stale **category** is a link, not a filter, so it is left to the normal loop, whose DONE and CLICK wording now says a search is not done while the page shows a different category from the kind of product the goal names.
 
 **Asking (task leash, redesigned in M3).** Every task-leash decide request carries two Nouls per unset control group that has not been asked or skipped in this task:
 
@@ -253,7 +264,7 @@ runLoop({ goal | utterance, leash }):
 - **The page writes the question.** The card title is the group label; the chips are the group's option names (or the `<select>` options). The agent says "Which {label}?". Nothing is generated.
 - **Answer matching.** Code first: if the reply equals an option's name after normalising, that is the answer. Otherwise `POST /api/match`: state is `{ group, options, answer }`; one `choice` over the option labels plus `skip` ("it doesn't matter") and `unclear`. On `unclear`, pulse the chips and say "Tap one, or say it again." Two failures hand back. A tap on a chip or on Skip needs no model.
 - **Apply** the answer by acting on the matching control, then continue the loop.
-- **Remember.** Save `{ label, value, scope, ts }` to localStorage, scoped to the site's hostname. Only answers to the agent's own questions are saved; "Narrow by" answers and skips are not. The memory panel lists preferences, each with a delete button.
+- **Remember.** Save `{ label, value, scope, ts }` to localStorage, scoped to the site's hostname. Answers to the agent's own questions are saved. A "Narrow by" answer is saved only when the group's *personal* Noul is at least `SAVE_MIN` (0.7): a size that must fit is remembered, a taste such as brand or colour never is. Skips are not saved. The memory panel lists preferences, each with a delete button.
 - **Memory is applied in code, before Jev is asked for the next operation.** At the start of every task step: if an unset group's label equals a saved preference's label (case-insensitive, bracketed suffixes ignored), act on the option whose name equals the saved value; if no name matches exactly, ask `/api/match` with the saved value as the answer. One attempt per group per task. The action trail says so ("Used your saved size: 10.5"), and no model call is made for it. Preferences still travel in the task-leash state so Jev can see them.
 - **Ask only what blocks progress.** Optional filters are never asked about. After hand-back, show "Narrow by:" chips built from the unset group labels; saying or tapping one makes the agent ask about that group, apply the answer, and stay in drive mode.
 - **While the agent drives**, speech is handled in this order: stop words (code), a reply to an open question, and nothing else ("still working").
@@ -299,6 +310,14 @@ Work in order. One milestone at a time. Each ends with its acceptance checks run
 
 **M3 · Delegate (50 min).** Task leash, ASK_USER and the ambiguity rule, question card, `/api/match`, memory, hand-back with "Narrow by" chips, deny-list, loop detection, caps, driver frame.
 *Accept:* the hero scenario runs end to end, twice in a row; the second task never asks for size and shows that memory was used; "stop" mid-task halts within one step; a task that reaches the cart never clicks Checkout; deleting the saved size makes it ask again.
+
+**M3.1 · Behaviour fixes from the real-voice run.** Clean slate for a new search, compound commands, never silent, confirm before spending, what is worth remembering.
+*Accept:*
+- *Clean slate.* Starting on Running with White, Grey, Brown, Arco and 10.5 set (10.5 saved), "find me white sneakers" ends on Sneakers with only White and the saved size set, and the trail shows "Kept your saved size: 10.5" and one "Cleared 3 old filters" chip. Then "only the ones under a hundred dollars" keeps those filters.
+- *Compound command.* "Open a product, pick a size and then add to cart" is routed as a TASK, uses the saved size on the product page without asking, and clicks Add to cart because the goal literally asks for it. It clears no filters.
+- *Never silent.* In drive mode "open the purple elephant" and "sort by customer rating" say "I can't find that on this page." in the capsule and by voice; a low-confidence kind or operation says "Didn't catch that."; speech that is confidently not for the agent is named in the capsule but not answered aloud. A task that ends on 0 results says "No matches with these filters. Your turn."
+- *Confirm before spending.* In drive mode "check out" on the cart shows "Click Checkout?" with Yes and No; "no" leaves it alone, "yes" clicks, both handled in code. In task mode Checkout is still a hard hand-back ("This one's yours.").
+- *What is remembered.* A "Narrow by" answer is saved only when the group's personal score is high: Size is saved, Brand is not.
 
 **Wrap (15 min).** README with run steps and the architecture diagram; trace export works; `NOTES.md` tidy.
 

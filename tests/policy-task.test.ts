@@ -76,7 +76,8 @@ describe('rule 6: deny-list (task mode)', () => {
   it('hands back with "yours" instead of clicking', () => {
     const heads: Heads = { operation: sure('CLICK'), click_target: sure('e9') };
     expect(resolve(heads, task)).toMatchObject({ type: 'HandBack', outcome: 'yours' });
-    expect(resolve(heads, { ...task, leash: 'single' })).toMatchObject({ type: 'Act' }); // the user may click it themselves
+    // Drive mode: confirm instead of block. Speech can be misheard, so spending money needs a second yes.
+    expect(resolve(heads, { ...task, leash: 'single', utterance: 'check out' })).toMatchObject({ type: 'Confirm', name: 'Checkout', target: 'e9' });
   });
 });
 
@@ -95,5 +96,21 @@ describe('rule 7: loop detection', () => {
     const heads: Heads = { operation: sure('CLICK'), click_target: sure('e1') };
     const history = [rec('CLICK', 'White', 'changed'), rec('CLICK', 'White', 'changed')];
     expect(resolve(heads, { ...task, history })).toMatchObject({ type: 'HandBack', outcome: 'stuck' });
+  });
+});
+
+describe('never silent: an Ignore says why', () => {
+  const drive: PolicyContext = { leash: 'single', useKind: true, groups: {}, utterance: 'x' };
+  it('not_found when the operation is STUCK or the target is a confident none', () => {
+    expect(resolve({ operation: sure('STUCK') }, drive)).toMatchObject({ type: 'Ignore', why: 'not_found' });
+    expect(resolve({ operation: sure('CLICK'), click_target: head({ none: 0.9, e1: 0.1 }, 0.8) }, drive)).toMatchObject({ type: 'Ignore', why: 'not_found' });
+    expect(resolve({ operation: sure('SELECT') }, drive)).toMatchObject({ type: 'Ignore', why: 'not_found' });
+  });
+  it('unsure when the operation confidence is low, or a weak NOT_FOR_ME may have been a command', () => {
+    expect(resolve({ operation: head({ CLICK: 0.5, TYPE: 0.5 }, 0.2) }, drive)).toMatchObject({ type: 'Ignore', why: 'unsure' });
+    expect(resolve({ operation: sure('CLICK'), kind: head({ NOT_FOR_ME: 0.45, ACTION: 0.4, TASK: 0.15 }, 0.2) }, drive)).toMatchObject({ type: 'Ignore', why: 'unsure' });
+  });
+  it('stays quiet about speech that is confidently not for it', () => {
+    expect(resolve({ operation: sure('CLICK'), kind: head({ NOT_FOR_ME: 0.97, ACTION: 0.03 }, 0.9) }, drive)).toMatchObject({ type: 'Ignore', why: 'not_for_me' });
   });
 });

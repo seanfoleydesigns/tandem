@@ -4,10 +4,11 @@ import { candidates, groupsByLabel, rowLine, type Candidates } from '../shared/c
 import { MAX_TASK_MS, type LabelStyle } from '../shared/config';
 import { fitPool, rankFits } from '../shared/fits';
 import { controlGroups, labelKey, unsetGroups, type ControlGroup } from '../shared/groups';
-import { denied, resolve, type Resolution } from '../shared/policy';
+import { denied, resolve, type Resolution, type Why } from '../shared/policy';
+import { planSlate, setOptions } from '../shared/slate';
 import { normalise } from '../shared/speech';
 import type {
-  ActionRecord, ApiError, DecideRequest, DecideResponse, ElementRow, FitsResponse, Leash, Operation, Preference,
+  ActionRecord, ApiError, DecideRequest, DecideResponse, ElementRow, FitsResponse, Leash, Operation, Preference, SlateResponse,
 } from '../shared/types';
 import * as exec from './execute';
 import { takeSnapshot, type Snap } from './snapshot';
@@ -48,9 +49,11 @@ export type Trace = {
   resolution?: Resolution;
   winner?: string; // the snapshot row that won, as sent to Jev
   disambiguation?: Disambiguation;
+  confirm?: { op: Operation; option: Option; name: string }; // drive mode: a deny-listed target waits for an explicit yes
+  why?: Why; // why nothing was done, so the agent is never silent
   fit?: { ms: number; asked: number; fits: { line: string; noul: number }[] }; // the follow-up fit check, when one ran
   rowNames: Map<string, string>;
-  result: 'acted' | 'ignored' | 'asked' | 'task' | 'done' | 'stuck' | 'yours' | 'stopped' | 'failed' | 'error';
+  result: 'acted' | 'ignored' | 'asked' | 'confirm' | 'task' | 'done' | 'stuck' | 'yours' | 'stopped' | 'failed' | 'error';
   note: string;
 };
 
@@ -106,9 +109,9 @@ export async function decideOnce(
 }
 
 // Follow-up to an uncertain target: one Noul per candidate. Returns nothing if the call fails.
-async function fitCheck(utterance: string, rows: ElementRow[], signal?: AbortSignal): Promise<FitsResponse | undefined> {
+async function fitCheck(utterance: string, rows: ElementRow[], leash: Leash, signal?: AbortSignal): Promise<FitsResponse | undefined> {
   try {
-    const res = await fetch('/api/fits', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ utterance, rows }), signal });
+    const res = await fetch('/api/fits', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ utterance, rows, leash }), signal });
     return res.ok ? ((await res.json()) as FitsResponse) : undefined;
   } catch {
     return undefined;
@@ -161,10 +164,13 @@ export async function runLoop(
   const started = performance.now();
   let waited = 0; // time spent waiting for the user does not count against the task clock
   let trace!: Trace;
-  const end = (result: Trace['result'], note?: string): Trace => { trace = { ...trace, result, note: note ?? trace.note }; hooks.onStep(trace); return trace; };
+  const end = (result: Trace['result'], note?: string, why?: Why): Trace => { trace = { ...trace, result, note: note ?? trace.note, why }; hooks.onStep(trace); return trace; };
+
+  // A new search starts from a clean slate; a refinement keeps what is there.
+  const cleared = task ? await cleanSlate(input.goal ?? '', hooks, history, input.signal) : 0;
 
   for (let step = 0; step < input.maxSteps; step++) {
-    if (step === 1) hooks.onDriving(); // the frame appears only when a second step begins
+    if (step === 1 || (step === 0 && cleared)) hooks.onDriving(); // the frame appears only when a second step begins
     const snap = takeSnapshot({ overlay: hooks.overlay, focused: hooks.pageFocus() });
     trace = {
       utterance: said, leash: input.leash, step, heard: input.heard, speculative: 'none', rows: snap.snapshot.rows.length,
@@ -218,22 +224,25 @@ export async function runLoop(
       let ranked: ElementRow[] | undefined;
       if (anchor && !anchor.options) {
         const pool = fitPool(anchor.role === 'textbox' || anchor.role === 'searchbox' ? cands.type : cands.click, anchor, [anchor.id]);
-        const checked = await fitCheck(said, pool, input.signal);
+        const checked = await fitCheck(said, pool, input.leash, input.signal);
         if (checked) {
           ranked = rankFits(pool, checked.fits);
           trace.fit = { ms: checked.ms, asked: pool.length, fits: ranked.slice(0, 6).map((r) => ({ line: rowLine(r), noul: checked.fits[r.id] ?? 0 })) };
           if (ranked.length >= 2) pair = [ranked[0]!.id, ranked[1]!.id];
         }
       }
-      if (ranked?.length === 0) return end(task ? 'stuck' : 'ignored', `${trace.note}; fit check: no candidate fits`);
+      if (ranked?.length === 0) return end(task ? 'stuck' : 'ignored', `${trace.note}; fit check: no candidate fits`, 'not_found');
       if (ranked?.length === 1 && next.op === 'CLICK') {
         next = { type: 'Act', op: 'CLICK', target: ranked[0]!.id, reason: `${trace.note}; fit check: only one candidate fits, so act on it` };
       } else if (task) {
-        // Several fitting options in one unset group: the user decides. Anything else is not ours to guess.
+        // Several fitting options in one unset group: the user decides.
         const group = ranked && ranked.every((r) => r.group === ranked![0]!.group) ? ranked[0]!.group : undefined;
         const key = group && labelKey(group);
         if (key && unsetGroups(decision.snap.snapshot).some((g) => g.key === key) && !asked.includes(key)) {
           next = { type: 'Ask', group: key, reason: `${trace.note}; fit check: ${ranked!.length} options of "${group}" fit and none is determined` };
+        } else if (ranked?.length && next.op === 'CLICK') {
+          // Several things to open fit equally and the goal does not say which ("open a product"): take the first.
+          next = { type: 'Act', op: 'CLICK', target: ranked[0]!.id, reason: `${trace.note}; fit check: ${ranked.length} candidates fit equally and the goal does not say which, so take the first` };
         } else return end('stuck', `${trace.note}; several candidates fit and it is not a question the page can ask`);
       } else {
         const [a, b] = pair.map(optionFor);
@@ -265,7 +274,16 @@ export async function runLoop(
 
     if (next.type === 'StartTask') return end('task');
     if (next.type === 'HandBack') return end(next.outcome);
-    if (next.type === 'Ignore' || next.type === 'Answer') return end('ignored');
+    if (next.type === 'Ignore') return end('ignored', undefined, next.why);
+    if (next.type === 'Answer') return end('ignored', undefined, 'unsure');
+    if (next.type === 'Confirm') {
+      // Drive mode and the target spends money or commits: the pipeline asks for a second, explicit yes.
+      const chosen = optionFor(next.target);
+      if (!chosen) return end('ignored', undefined, 'not_found');
+      trace.confirm = { op: next.op, option: chosen, name: next.name };
+      trace.winner = chosen.line;
+      return end('confirm');
+    }
 
     // Act, or type the transcript as it is into the focused field. Labels are only ever looked up.
     let done: Awaited<ReturnType<typeof act>>;
@@ -291,13 +309,15 @@ export async function runLoop(
 }
 
 // If an unset group's label equals a saved preference's label, act on the option whose name equals
-// the saved value. No name matches exactly: ask /api/match. One attempt per group per task.
+// the saved value. No name matches exactly: ask /api/match. One attempt per group per page per task:
+// the listing's Size filter and a product page's Size selector are different controls.
 async function applyMemory(snap: Snap, hooks: LoopHooks, history: ActionRecord[], tried: Set<string>) {
   const prefs = hooks.prefs();
   for (const group of unsetGroups(snap.snapshot)) {
     const pref = prefs.find((p) => labelKey(p.label) === group.key);
-    if (!pref || tried.has(group.key)) continue;
-    tried.add(group.key);
+    const attempt = `${location.pathname}|${group.key}`;
+    if (!pref || tried.has(attempt)) continue;
+    tried.add(attempt);
     let row = group.rows.find((r) => normalise(r.name) === normalise(pref.value));
     if (!row) {
       const choice = await hooks.matchOption(group.label, group.rows.map((r) => r.name), pref.value);
@@ -310,4 +330,38 @@ async function applyMemory(snap: Snap, hooks: LoopHooks, history: ActionRecord[]
     return { ...done, line: rowLine(row), note: `saved preference ${group.label} = ${pref.value}, applied in code with no model call` };
   }
   return undefined;
+}
+
+// Clean slate, once at task start. One Jev request: is the goal a refinement, and which of the filter
+// options that are on does it ask for? A new search switches off the rest, except a saved preference.
+// Returns how many filters were cleared.
+async function cleanSlate(goal: string, hooks: LoopHooks, history: ActionRecord[], signal?: AbortSignal): Promise<number> {
+  const snap = takeSnapshot({ overlay: hooks.overlay, wide: true }); // filters may be scrolled out of view
+  const set = setOptions(snap.snapshot);
+  if (!set.length) return 0;
+
+  let answers: SlateResponse;
+  try {
+    const { title, headings, notices } = snap.snapshot;
+    const body = { goal, page: { title, headings, notices }, filters: set.map((o) => ({ id: o.id, text: `${o.group}: ${o.option}` })) };
+    const res = await fetch('/api/slate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal });
+    if (!res.ok) return 0;
+    answers = (await res.json()) as SlateResponse;
+  } catch {
+    return 0; // without an answer, leave the page as it is
+  }
+
+  const plan = planSlate(set, answers, hooks.prefs());
+  for (const kept of plan.keptPrefs) hooks.onTrail(`Kept your saved ${kept.group.toLowerCase()}: ${kept.option}`, 'memory');
+  let cleared = 0;
+  for (const o of plan.clear) {
+    if (signal?.aborted) break;
+    const done = await act({ op: 'CLICK', row: o.row, el: snap.nodes.get(o.id) }, hooks, []); // housekeeping: not part of loop detection
+    if (done.outcome.ok) cleared += 1;
+  }
+  if (cleared) {
+    hooks.onTrail(`Cleared ${cleared} old filter${cleared === 1 ? '' : 's'}`);
+    history.push({ op: 'CLICK', target: `cleared ${cleared} old filters`, outcome: 'changed', ts: Date.now() });
+  }
+  return cleared;
 }

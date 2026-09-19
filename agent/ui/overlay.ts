@@ -30,7 +30,7 @@ export type Overlay = {
   showStatus: (text: string, tone: 'ok' | 'unsure') => void;
   showTrace: (trace: Trace) => void;
   trail: (text: string, tone?: 'memory') => void;
-  question: (q: { title: string; options: string[] } | undefined, onPick?: (index: number) => void, onSkip?: () => void) => void;
+  question: (q: { heading: string; options: string[]; skip?: boolean } | undefined, onPick?: (index: number) => void, onSkip?: () => void) => void;
   pulseQuestion: () => void;
   narrow: (labels: string[] | undefined, onPick?: (index: number) => void) => void;
   memory: (prefs: Preference[], onDelete: (label: string) => void) => void;
@@ -233,10 +233,10 @@ export function mountOverlay(events: OverlayEvents): Overlay {
       const card = $('.card');
       card.hidden = !q;
       if (!q) return;
-      card.innerHTML = `<h2>Which ${esc(q.title.toLowerCase())}?</h2><div class="chips">${chipHtml(q.options)}</div>
-        <p><button class="skip">Skip</button> <span>Tap one, or say it.</span></p>`;
+      card.innerHTML = `<h2>${esc(q.heading)}</h2><div class="chips">${chipHtml(q.options)}</div>
+        <p>${q.skip ? '<button class="skip">Skip</button> ' : ''}<span>Tap one, or say it.</span></p>`;
       chips(card, onPick);
-      card.querySelector('.skip')!.addEventListener('click', () => onSkip?.());
+      card.querySelector('.skip')?.addEventListener('click', () => onSkip?.());
     },
     pulseQuestion() {
       const card = $('.card');

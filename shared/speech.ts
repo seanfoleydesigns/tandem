@@ -31,3 +31,14 @@ export function pickOneOrTwo(text: string): 0 | 1 | undefined {
   if (TWO.has(t)) return 1;
   return undefined;
 }
+
+const YES = new Set(['yes', 'yeah', 'yep', 'yup', 'yes please', 'sure', 'ok', 'okay', 'do it', 'go ahead', 'confirm', 'click it', 'yes do it']);
+const NO = new Set(['no', 'nope', 'nah', 'no thanks', 'no thank you', 'don t', 'dont', 'do not', 'never mind', 'nevermind']);
+
+// The reply to a confirmation such as "Click Checkout?". Handled in code; anything else leaves the card open.
+export function pickYesOrNo(text: string): boolean | undefined {
+  const t = normalise(text);
+  if (YES.has(t)) return true;
+  if (NO.has(t)) return false;
+  return undefined;
+}

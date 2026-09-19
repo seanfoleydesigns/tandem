@@ -5,10 +5,10 @@ import { DECIDE_RETRIES, DECIDE_TIMEOUT_MS, FIT_POOL, LABEL_STYLE } from '../sha
 import { unsetGroups } from '../shared/groups';
 import {
   fitQuestions, kindQuestion, matchQuestion, needsQuestions, operationQuestionSingle, operationQuestionTask,
-  targetQuestions, typedSpanQuestion, type ChoiceQuestion, type NoulQuestion,
+  slateQuestions, targetQuestions, typedSpanQuestion, type ChoiceQuestion, type NoulQuestion,
 } from '../shared/questions';
 import { wordSpans } from '../shared/spans';
-import type { DecideRequest, DecideResponse, FitsRequest, FitsResponse, Head, Heads, MatchRequest, MatchResponse } from '../shared/types';
+import type { DecideRequest, DecideResponse, FitsRequest, FitsResponse, Head, Heads, MatchRequest, MatchResponse, SlateRequest, SlateResponse } from '../shared/types';
 import { ask } from './jev';
 
 const row = z.object({
@@ -104,11 +104,11 @@ export async function decide(req: DecideRequest): Promise<DecideResponse> {
   return { model: r.model, ms: r.ms, usage: r.usage, labelStyle, heads: heads as Heads, ...(task ? { needs, needsParts } : {}) };
 }
 
-export const fitsRequest = z.object({ utterance: z.string().max(2000), rows: z.array(row).min(1).max(FIT_POOL) });
+export const fitsRequest = z.object({ utterance: z.string().max(2000), rows: z.array(row).min(1).max(FIT_POOL), leash: z.enum(['single', 'task']).optional() });
 
 // Which of these candidates fit? One Noul per candidate, all in one request.
 export async function fits(req: FitsRequest): Promise<FitsResponse> {
-  const questions = fitQuestions(req.rows.map((r) => ({ label: r.id, text: describeRow(r) })));
+  const questions = fitQuestions(req.rows.map((r) => ({ label: r.id, text: describeRow(r) })), req.leash);
   const r = await ask({ utterance: req.utterance }, questions, { timeout: DECIDE_TIMEOUT_MS, retry: { maxRetries: 0 } });
   const out: Record<string, number> = {};
   for (const [label, a] of Object.entries(r.answers)) out[label] = a.noul;
@@ -126,4 +126,24 @@ export async function match(req: MatchRequest): Promise<MatchResponse> {
   });
   const { choice, confidence, probabilities } = r.answers.match;
   return { model: r.model, ms: r.ms, usage: r.usage, head: { choice, confidence, probabilities } };
+}
+
+export const slateRequest = z.object({
+  goal: z.string().max(2000),
+  page: z.object({ title: z.string(), headings: z.array(z.string()), notices: z.array(z.string()) }),
+  filters: z.array(z.object({ id: z.string(), text: z.string().max(200) })).min(1).max(60),
+});
+
+// Clean slate: one request at task start. Is the goal a refinement, and which set options does it ask for?
+export async function slate(req: SlateRequest): Promise<SlateResponse> {
+  const q = slateQuestions(req.filters.map((f) => f.text));
+  const questions: Record<string, NoulQuestion> = { refines: q.refines, names_product: q.names_product };
+  q.asks.forEach((question, i) => { questions[`asks_${i}`] = question; });
+  const r = await ask({ goal: req.goal, page: req.page, filters: req.filters.map((f) => f.text) }, questions, {
+    timeout: DECIDE_TIMEOUT_MS, retry: { maxRetries: 1 },
+  });
+  const noul = (id: string) => (r.answers[id] as { noul: number }).noul;
+  const asks: Record<string, number> = {};
+  req.filters.forEach((f, i) => { asks[f.id] = noul(`asks_${i}`); });
+  return { model: r.model, ms: r.ms, usage: r.usage, refines: noul('refines'), namesProduct: noul('names_product'), asks };
 }

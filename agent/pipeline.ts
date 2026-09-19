@@ -1,10 +1,11 @@
 // From words to an action. Typed commands, the recognizer and the dev simulator all arrive here.
 // Order of business for every transcript: stop (code), an open question (code, then /api/match),
 // "one / two" (code), a "Narrow by" chip (code), then the one loop (Jev).
-import { INTERIM_STABLE_MS, MAX_STEPS, MAX_UNCLEAR, WARM_EVERY_MS } from '../shared/config';
+import { INTERIM_STABLE_MS, MAX_STEPS, MAX_UNCLEAR, SAVE_MIN, WARM_EVERY_MS } from '../shared/config';
 import { unsetGroups, type ControlGroup } from '../shared/groups';
+import { noMatches } from '../shared/notices';
 import { MATCH_SKIP, MATCH_UNCLEAR } from '../shared/questions';
-import { isStop, normalise, pickOneOrTwo } from '../shared/speech';
+import { isStop, normalise, pickOneOrTwo, pickYesOrNo } from '../shared/speech';
 import type { ElementRow, MatchResponse } from '../shared/types';
 import { act, decideOnce, runLoop, type AskResult, type Decision, type Disambiguation, type LoopHooks, type Trace } from './loop';
 import { deletePref, listPrefs, savePref } from './memory';
@@ -18,6 +19,8 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
   let pending: Disambiguation | undefined; // badges are up, waiting for "one" or "two"
   let question: { group: ControlGroup; hear: (text: string) => void; settle: (r: AskResult) => void } | undefined;
   let narrow: ControlGroup[] = []; // "Narrow by" chips on screen after a hand-back
+  let confirming: { settle: (yes: boolean) => void } | undefined; // "Click Checkout?" is on screen
+  const personal: Record<string, number> = {}; // group key -> the latest personal Noul, to decide what is worth remembering
   let lastWarm = -Infinity;
   const traces: Trace[] = []; // the decision log
 
@@ -68,7 +71,7 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
       question = { group, hear: (t) => void hear(t), settle };
       overlay.setMode('waiting');
       overlay.question(
-        { title: group.label, options: group.rows.map((r) => r.name) },
+        { heading: `Which ${group.label.toLowerCase()}?`, options: group.rows.map((r) => r.name), skip: true },
         (i) => settle({ type: 'answer', row: group.rows[i] as ElementRow }),
         () => settle({ type: 'skip' }),
       );
@@ -81,7 +84,11 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
     labelStyle: overlay.labelStyle,
     pageFocus: overlay.pageFocus,
     onRing: overlay.ring,
-    onStep: (trace) => { traces.push(trace); overlay.showTrace(trace); },
+    onStep: (trace) => {
+      traces.push(trace);
+      for (const [key, parts] of Object.entries(trace.response?.needsParts ?? {})) personal[key] = parts.personal;
+      overlay.showTrace(trace);
+    },
     onTrail: overlay.trail,
     onDriving: () => overlay.setMode('agent'),
     prefs: listPrefs,
@@ -117,6 +124,7 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
     getVoice().cancelSpeech();
     if (pending) { pending = undefined; overlay.badges(undefined); }
     question?.settle({ type: 'stopped' });
+    if (confirming) { confirming = undefined; overlay.question(undefined); overlay.setMode('user'); }
     overlay.showStatus(`Stopped (${source})`, 'ok');
   }
 
@@ -155,9 +163,17 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
     overlay.setMode('user');
     if (trace.result === 'stopped') return overlay.showStatus('Stopped. Your turn.', 'ok');
     if (trace.result === 'yours') { getVoice().speak("This one's yours."); return overlay.showStatus("This one's yours.", 'ok'); }
-    getVoice().speak('Your turn.');
-    if (trace.result !== 'done') return overlay.showStatus(`Your turn. I got stuck: ${trace.note}`, 'unsure');
-    overlay.showStatus('Your turn.', 'ok');
+    // Code reads the page's own result notice: an empty list is worth saying out loud.
+    const page = takeSnapshot({ overlay: overlay.host }).snapshot;
+    const empty = noMatches(page.notices);
+    const lead = empty ? 'No matches with these filters. ' : '';
+    getVoice().speak(`${lead}Your turn.`);
+    // Plain words in the capsule; the reasons stay in the inspector.
+    if (trace.result !== 'done') {
+      const why = empty ? '' : trace.resolution?.type === 'HandBack' || /operation DONE/.test(trace.note) ? " That's as far as I could take it." : " I wasn't sure what to do next.";
+      return overlay.showStatus(`${lead}Your turn.${why}`, 'unsure');
+    }
+    overlay.showStatus(`${lead}Your turn.`, empty ? 'unsure' : 'ok');
     // "Narrow by": the groups nobody has set. Optional filters are never asked about; the user may pick one.
     narrow = unsetGroups(takeSnapshot({ overlay: overlay.host }).snapshot);
     overlay.narrow(narrow.map((g) => g.label), (i) => void narrowBy(narrow[i]!));
@@ -175,15 +191,59 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
       const answer = await ask(group, 'the user chose to narrow by this group');
       if (answer.type !== 'answer') return;
       const done = await act({ op: 'CLICK', row: answer.row, el: snap.nodes.get(answer.row.id) }, hooks);
-      if (done.outcome.ok) overlay.trail(`${group.label}: ${answer.row.name}`);
+      if (!done.outcome.ok) return;
+      // Remember only what is a fact about the user (a size that must fit), never a taste like brand or colour.
+      const remember = (personal[group.key] ?? 0) >= SAVE_MIN;
+      if (remember) hooks.savePref(group.label, answer.row.name);
+      overlay.trail(`${group.label}: ${answer.row.name}${remember ? ' (saved)' : ''}`);
     } finally {
       busy = false;
       overlay.setMode('user');
+      // Offer what is still open, so the user can keep narrowing.
+      narrow = unsetGroups(takeSnapshot({ overlay: overlay.host }).snapshot);
+      overlay.narrow(narrow.map((g) => g.label), (i) => void narrowBy(narrow[i]!));
     }
+  }
+
+  // Never silent: when nothing was done in drive mode, say why, in the capsule and by voice.
+  function explain(trace: Trace) {
+    if (trace.result === 'ignored' && trace.why === 'not_for_me') return overlay.showStatus(`“${trace.utterance}” did not sound like it was for me.`, 'unsure'); // shown, not spoken
+    const text = trace.result === 'error' ? "I couldn't reach the model."
+      : trace.result === 'failed' ? "I couldn't do that here."
+      : trace.result === 'ignored' && trace.why === 'not_found' ? "I can't find that on this page."
+      : trace.result === 'ignored' ? "Didn't catch that." : undefined;
+    if (!text) return;
+    overlay.showStatus(text, 'unsure');
+    getVoice().speak(text);
+  }
+
+  // Drive mode and a target that spends money or commits: speech can be misheard, so ask for a second, explicit yes.
+  function confirm(c: NonNullable<Trace['confirm']>, heard: Trace['heard']) {
+    const settle = (yes: boolean) => {
+      if (!confirming) return;
+      confirming = undefined;
+      overlay.question(undefined);
+      overlay.setMode('user');
+      if (!yes) return overlay.showStatus(`Left ${c.name} alone.`, 'ok');
+      void act({ op: c.op, row: c.option.row, el: c.option.el, option: c.option.option }, hooks).then((done) => {
+        if (done.outcome.ok) overlay.trail(`Clicked ${c.name} (you confirmed)`);
+        else overlay.showStatus("I couldn't do that here.", 'unsure');
+      });
+    };
+    confirming = { settle };
+    void heard;
+    overlay.setMode('waiting');
+    overlay.question({ heading: `Click ${c.name}?`, options: ['Yes', 'No'] }, (i) => settle(i === 0));
+    getVoice().speak(`Click ${c.name}?`);
   }
 
   async function command(text: string, heard: Trace['heard']): Promise<Trace | undefined> {
     if (isStop(text)) { stop('said'); return undefined; }
+    if (confirming) {
+      const yes = pickYesOrNo(text);
+      if (yes !== undefined) { confirming.settle(yes); return undefined; }
+      confirming.settle(false); // anything else is a new command, and the confirmation is withdrawn
+    }
     if (question) { question.hear(text); return undefined; }
     if (pending) {
       const pick = pickOneOrTwo(text);
@@ -211,7 +271,9 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
         pending = trace.disambiguation;
         overlay.badges(pending.options.map((o) => o.el) as [Element, Element], (i) => void choose(i, { final: performance.now() }, `tap ${i + 1}`));
         getVoice().speak('One or two?');
-      } else if (trace.result === 'acted') { overlay.narrow(undefined); narrow = []; }
+      } else if (trace.result === 'confirm' && trace.confirm) confirm(trace.confirm, heard);
+      else if (trace.result === 'acted') { overlay.narrow(undefined); narrow = []; }
+      else explain(trace);
       return trace;
     } finally { busy = false; abort = undefined; }
   }

@@ -62,7 +62,8 @@ function stateOf(el: Element, role: string): string | undefined {
 
 type Item = { el: Element; role: string; place: Placement; top: number; bottom: number; group?: string; ordinal?: string };
 
-export function takeSnapshot(opts: { overlay: Element; focused?: Element | null }): Snap {
+// `wide` keeps rows wherever they are on the page, for housekeeping that must see every filter.
+export function takeSnapshot(opts: { overlay: Element; focused?: Element | null; wide?: boolean }): Snap {
   const started = performance.now();
   const bar = topBar(opts.overlay);
   const vp: Viewport = { width: window.innerWidth, height: window.innerHeight, insetTop: bar.bottom };
@@ -100,7 +101,7 @@ export function takeSnapshot(opts: { overlay: Element; focused?: Element | null 
   }
 
   // Rows: in or near the viewport (one viewport above or below), capped, in reading order.
-  const near = items.filter((i) => i.bottom >= -vp.height && i.top <= 2 * vp.height).slice(0, MAX_ROWS);
+  const near = items.filter((i) => opts.wide || (i.bottom >= -vp.height && i.top <= 2 * vp.height)).slice(0, MAX_ROWS);
   const nodes = new Map<string, Element>();
   const options = new Map<string, HTMLOptionElement>();
   let focused: string | undefined;

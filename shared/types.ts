@@ -94,9 +94,13 @@ export type HealthResponse =
 export type ApiError = { ok: false; status?: number; error: string };
 
 // Fit check: which of these candidates could the utterance be referring to? One Noul each.
-export type FitsRequest = { utterance: string; rows: ElementRow[] };
+export type FitsRequest = { utterance: string; rows: ElementRow[]; leash?: Leash };
 export type FitsResponse = { model: string; ms: number; usage: JevUsage; fits: Record<string, number> };
 
 // Answer matching: which option does the spoken answer mean? One Choice over the option names.
 export type MatchRequest = { group: string; options: string[]; answer: string };
 export type MatchResponse = { model: string; ms: number; usage: JevUsage; head: Head };
+
+// Clean slate, once at task start: is the goal a refinement, and which set filter options does it ask for?
+export type SlateRequest = { goal: string; page: { title: string; headings: string[]; notices: string[] }; filters: { id: string; text: string }[] };
+export type SlateResponse = { model: string; ms: number; usage: JevUsage; refines: number; namesProduct: number; asks: Record<string, number> };

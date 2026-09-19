@@ -15,7 +15,12 @@ export type Resolution =
   | { type: 'Answer'; reason: string }
   | { type: 'Dictate'; text: string; reason: string }
   | { type: 'HandBack'; outcome: 'done' | 'stuck' | 'stopped' | 'yours'; reason: string }
-  | { type: 'Ignore'; reason: string };
+  // Drive mode, and the target is on the deny-list: speech can be misheard, so ask for a second, explicit yes.
+  | { type: 'Confirm'; op: Operation; target: string; name: string; reason: string }
+  // Never silent: an Ignore says why. not_found: "I can't find that on this page." unsure: "Didn't catch that."
+  | { type: 'Ignore'; why: Why; reason: string };
+
+export type Why = 'not_found' | 'unsure' | 'not_for_me';
 
 export type PolicyContext = {
   leash: Leash;
@@ -95,8 +100,8 @@ export function resolve(heads: Heads, ctx: PolicyContext): Resolution {
     type: 'Ask', group: asks[0]![0], reason: `${why}; needs ${asks[0]![0]} ${f(asks[0]![1])} ≥ ASK_MIN ${ASK_MIN}`,
   });
   // In task mode, not knowing what to do next becomes a question when there is one to ask.
-  const giveUp = (reason: string): Resolution =>
-    drive ? { type: 'Ignore', reason } : asks.length ? askTop(reason) : { type: 'HandBack', outcome: 'stuck', reason };
+  const giveUp = (reason: string, why: Why): Resolution =>
+    drive ? { type: 'Ignore', why, reason } : asks.length ? askTop(reason) : { type: 'HandBack', outcome: 'stuck', reason };
 
   // Rule 1: kind. Biased toward ACTION: TASK and DICTATION need their own probability to reach a floor.
   if (ctx.useKind && heads.kind) {
@@ -107,23 +112,27 @@ export function resolve(heads: Heads, ctx: PolicyContext): Resolution {
     if (k === 'ANSWER') return { type: 'Answer', reason: why };
     if (k === 'TASK' && p >= TASK_MIN) return { type: 'StartTask', goal: ctx.utterance ?? '', reason: `${why} ≥ TASK_MIN ${TASK_MIN}` };
     if (k === 'DICTATION' && p >= DICTATION_MIN) return { type: 'Dictate', text: ctx.utterance ?? '', reason: `${why} ≥ DICTATION_MIN ${DICTATION_MIN}` };
-    if (k === 'NOT_FOR_ME') return { type: 'Ignore', reason: why };
+    // Confidently not for us: stay quiet. Weakly so: it may have been a command we did not catch.
+    if (k === 'NOT_FOR_ME') return { type: 'Ignore', why: heads.kind.confidence >= 0.5 ? 'not_for_me' : 'unsure', reason: why };
   }
 
   // Rule 2: operation confidence
   const op = heads.operation.choice as Operation;
   const opWhy = `operation ${op} (conf ${f(heads.operation.confidence)}, top ${f(topProbability(heads.operation))})`;
-  if (heads.operation.confidence < OP_MIN) return giveUp(`${opWhy} is under OP_MIN ${OP_MIN}`);
+  if (heads.operation.confidence < OP_MIN) return giveUp(`${opWhy} is under OP_MIN ${OP_MIN}`, 'unsure');
 
   // DONE is accepted only when nothing essential is still unknown.
   if (op === 'DONE') return asks.length ? askTop(opWhy) : { type: 'HandBack', outcome: 'done', reason: opWhy };
-  if (op === 'STUCK') return giveUp(opWhy);
+  if (op === 'STUCK') return giveUp(opWhy, 'not_found');
 
   const act = (action: { target?: string; text?: string }, reason: string): Resolution => {
     const name = action.target ? ctx.names?.[action.target] ?? '' : '';
     // Asking takes precedence over clicking inside the group it would ask about.
     const group = action.target ? ctx.groups[action.target] : undefined;
     if (group && asks.some(([key]) => key === labelKey(group))) return askTop(`${reason}, which is inside a group the user must decide`);
+    if (drive && action.target && name && denied(name, ctx.utterance ?? '')) {
+      return { type: 'Confirm', op, target: action.target, name, reason: `${reason}; "${name}" is on the deny-list, so confirm first` };
+    }
     if (!drive) {
       if (name && denied(name, ctx.goal ?? '')) return { type: 'HandBack', outcome: 'yours', reason: `${reason}; "${name}" is on the deny-list` };
       const loop = looping(ctx.history ?? [], { op, target: name || undefined });
@@ -137,12 +146,12 @@ export function resolve(heads: Heads, ctx: PolicyContext): Resolution {
   // Rule 3: the target head for the chosen operation
   const headName = TARGET_HEAD[op];
   const target = headName && heads[headName];
-  if (!headName || !target) return giveUp(`${opWhy}; the page offers no candidate for it`);
+  if (!headName || !target) return giveUp(`${opWhy}; the page offers no candidate for it`, 'not_found');
   const top = topProbability(target);
   const tWhy = `${headName} ${target.choice} (conf ${f(target.confidence)}, top ${f(top)})`;
 
   // A confident `none` means nothing fits. Treat it like rule 2 instead of badging two near-zero rows.
-  if (target.choice === NONE && target.confidence >= TARGET_MIN) return giveUp(`${opWhy}; ${tWhy}: nothing fits`);
+  if (target.choice === NONE && target.confidence >= TARGET_MIN) return giveUp(`${opWhy}; ${tWhy}: nothing fits`, 'not_found');
 
   const low = target.choice === NONE || target.confidence < TARGET_MIN;
   const order = ranked(target);
@@ -164,7 +173,7 @@ export function resolve(heads: Heads, ctx: PolicyContext): Resolution {
   if (low) {
     const why = `${opWhy}; ${tWhy} is under TARGET_MIN ${TARGET_MIN}`;
     if (order.length >= 2) return { type: 'Disambiguate', op, candidates: [order[0]![0], order[1]![0]], reason: why };
-    return giveUp(why);
+    return giveUp(why, 'not_found');
   }
 
   // TYPE also needs the words. On the single leash they come from the typed_span head.
@@ -172,7 +181,7 @@ export function resolve(heads: Heads, ctx: PolicyContext): Resolution {
     const span = heads.typed_span;
     if (!span || span.choice === NO_SPAN || span.confidence < TARGET_MIN) {
       const sWhy = span ? `typed_span ${JSON.stringify(span.choice)} (conf ${f(span.confidence)}, top ${f(topProbability(span))})` : 'no typed_span head';
-      return giveUp(`${opWhy}; ${tWhy}; ${sWhy}: no clear text to type`);
+      return giveUp(`${opWhy}; ${tWhy}; ${sWhy}: no clear text to type`, 'unsure');
     }
     return act({ target: target.choice, text: span.choice }, `${opWhy}; ${tWhy}; typed_span ${JSON.stringify(span.choice)} (conf ${f(span.confidence)})`);
   }

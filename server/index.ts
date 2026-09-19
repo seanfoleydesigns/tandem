@@ -1,7 +1,7 @@
 import express from 'express';
 import { HEALTH_STATE, healthQuestions } from '../shared/questions';
-import type { DecideRequest, FitsRequest, HealthResponse, MatchRequest } from '../shared/types';
-import { decide, decideRequest, fits, fitsRequest, match, matchRequest } from './decide';
+import type { DecideRequest, FitsRequest, HealthResponse, MatchRequest, SlateRequest } from '../shared/types';
+import { decide, decideRequest, fits, fitsRequest, match, matchRequest, slate, slateRequest } from './decide';
 import { ask, describeError, warm } from './jev';
 
 const PORT = 8787;
@@ -66,6 +66,20 @@ app.post('/api/match', async (req, res) => {
   }
   try {
     res.json(await match(parsed.data as MatchRequest));
+  } catch (err) {
+    res.status(502).json({ ok: false, ...describeError(err) });
+  }
+});
+
+// Once at task start: is the goal a refinement, and which set filter options does it ask for?
+app.post('/api/slate', async (req, res) => {
+  const parsed = slateRequest.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.issues.map((i) => i.path.join('.') + ': ' + i.message).join('; ') });
+    return;
+  }
+  try {
+    res.json(await slate(parsed.data as SlateRequest));
   } catch (err) {
     res.status(502).json({ ok: false, ...describeError(err) });
   }

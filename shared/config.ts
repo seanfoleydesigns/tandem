@@ -23,6 +23,12 @@ export const DICTATION_MIN = 0.6; // DICTATION has a floor too: below it the utt
 // A group is asked about when its Noul reaches this and it has not been asked or skipped in this task.
 export const ASK_MIN = 0.7;
 export const MAX_UNCLEAR = 2; // unclear answers to one question before handing back
+export const SAVE_MIN = 0.7; // a "Narrow by" answer is saved only when the group's personal Noul reaches this
+
+// Clean slate, asked once at task start. A goal is a refinement when `refines` reaches this and beats
+// the "names a kind of product" Noul; otherwise it is a new search and leftover filters are cleared.
+export const REFINES_MIN = 0.6;
+export const KEEP_MIN = 0.5; // a set option stays when "goal asks for it" reaches this
 
 export const MAX_STEPS = 25;
 export const MAX_TASK_MS = 60_000;
