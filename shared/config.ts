@@ -17,6 +17,12 @@ export const FIT_POOL = 40; // candidates checked at most
 // kind is biased toward ACTION, because a wrong TASK is the costlier mistake. An utterance is routed
 // to a task only when TASK's own probability reaches this. Below it, the single leash runs.
 export const TASK_MIN = 0.7;
+export const DICTATION_MIN = 0.6; // DICTATION has a floor too: below it the utterance is treated as a command
+
+// Asking. One needs_* Noul per unset control group rides on every task-leash decide request.
+// A group is asked about when its Noul reaches this and it has not been asked or skipped in this task.
+export const ASK_MIN = 0.7;
+export const MAX_UNCLEAR = 2; // unclear answers to one question before handing back
 
 export const MAX_STEPS = 25;
 export const MAX_TASK_MS = 60_000;

@@ -1,10 +1,14 @@
 // The one loop. Drive and delegate differ only by the leash: maxSteps 1 versus 25.
-// snapshot → /api/decide → policy.resolve → execute → settle → record.
+// snapshot → (task: saved preferences, in code) → /api/decide → policy.resolve → execute → settle → record.
 import { candidates, groupsByLabel, rowLine, type Candidates } from '../shared/candidates';
-import type { LabelStyle } from '../shared/config';
+import { MAX_TASK_MS, type LabelStyle } from '../shared/config';
 import { fitPool, rankFits } from '../shared/fits';
-import { resolve, type Resolution } from '../shared/policy';
-import type { ActionRecord, ApiError, DecideRequest, DecideResponse, ElementRow, FitsResponse, Leash, Operation } from '../shared/types';
+import { controlGroups, labelKey, unsetGroups, type ControlGroup } from '../shared/groups';
+import { denied, resolve, type Resolution } from '../shared/policy';
+import { normalise } from '../shared/speech';
+import type {
+  ActionRecord, ApiError, DecideRequest, DecideResponse, ElementRow, FitsResponse, Leash, Operation, Preference,
+} from '../shared/types';
 import * as exec from './execute';
 import { takeSnapshot, type Snap } from './snapshot';
 
@@ -31,6 +35,7 @@ export type Disambiguation = { op: Operation; options: [Option, Option]; text?: 
 export type Trace = {
   utterance: string;
   leash: Leash;
+  step: number;
   heard: Heard;
   speculative: 'hit' | 'miss' | 'none'; // was a decision fired on an interim transcript used?
   rows: number;
@@ -45,25 +50,38 @@ export type Trace = {
   disambiguation?: Disambiguation;
   fit?: { ms: number; asked: number; fits: { line: string; noul: number }[] }; // the follow-up fit check, when one ran
   rowNames: Map<string, string>;
-  result: 'acted' | 'ignored' | 'asked' | 'task' | 'stopped' | 'failed' | 'error';
+  result: 'acted' | 'ignored' | 'asked' | 'task' | 'done' | 'stuck' | 'yours' | 'stopped' | 'failed' | 'error';
   note: string;
 };
+
+// The question card. The page writes the question: its group label and its option names.
+export type AskResult = { type: 'answer'; row: ElementRow } | { type: 'skip' } | { type: 'giveup' } | { type: 'stopped' };
 
 export type LoopHooks = {
   overlay: Element;
   labelStyle: () => LabelStyle;
   pageFocus: () => Element | null;
   onRing: (rect: DOMRect) => void;
+  onStep: (trace: Trace) => void; // after every step, for the inspector
+  onTrail: (text: string, tone?: 'memory') => void; // what was done
+  onDriving: () => void; // a second step is beginning: the agent is visibly driving
+  prefs: () => Preference[];
+  savePref: (label: string, value: string) => void;
+  ask: (group: ControlGroup, reason: string) => Promise<AskResult>;
+  matchOption: (group: string, options: string[], answer: string) => Promise<string | undefined>; // /api/match
 };
 
-const history: ActionRecord[] = [];
+const driveHistory: ActionRecord[] = [];
 const describeTarget = (row?: ElementRow) => (row ? [row.role, row.name, row.group].filter(Boolean).join(' · ') : undefined);
 
-export async function decideOnce(utterance: string, leash: Leash, hooks: LoopHooks, signal?: AbortSignal): Promise<Decision> {
-  const snap = takeSnapshot({ overlay: hooks.overlay, focused: hooks.pageFocus() });
+export async function decideOnce(
+  input: { utterance?: string; goal?: string; leash: Leash; history: ActionRecord[]; asked?: string[]; prefs?: Preference[] },
+  hooks: Pick<LoopHooks, 'overlay' | 'labelStyle' | 'pageFocus'>, signal?: AbortSignal, taken?: Snap,
+): Promise<Decision> {
+  const snap = taken ?? takeSnapshot({ overlay: hooks.overlay, focused: hooks.pageFocus() });
   const cands = candidates(snap.snapshot);
   const decision: Decision = {
-    utterance, snap, cands,
+    utterance: input.utterance ?? input.goal ?? '', snap, cands,
     rowsById: new Map(snap.snapshot.rows.map((r) => [r.id, r])),
     rowNames: new Map<string, string>([
       ...snap.snapshot.rows.map((r) => [r.id, `${r.role} ${r.name}`.slice(0, 36)] as [string, string]),
@@ -72,7 +90,8 @@ export async function decideOnce(utterance: string, leash: Leash, hooks: LoopHoo
     t1: performance.now(), t2: 0,
   };
   const body: DecideRequest = {
-    leash, utterance, prefs: [], history: history.slice(-6), snapshot: snap.snapshot, labelStyle: hooks.labelStyle(),
+    leash: input.leash, utterance: input.utterance, goal: input.goal, prefs: input.prefs ?? [],
+    history: input.history.slice(-6), snapshot: snap.snapshot, asked: input.asked, labelStyle: hooks.labelStyle(),
   };
   try {
     const res = await fetch('/api/decide', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal });
@@ -98,8 +117,8 @@ async function fitCheck(utterance: string, rows: ElementRow[], signal?: AbortSig
 
 // Carry out one chosen operation on one element, then wait for the page to settle.
 export async function act(
-  action: { op: Operation; row?: ElementRow; el?: Element; option?: HTMLOptionElement; text?: string; append?: boolean },
-  hooks: LoopHooks,
+  action: { op: Operation; row?: ElementRow; el?: Element; option?: HTMLOptionElement; text?: string; append?: boolean; usedPref?: string },
+  hooks: Pick<LoopHooks, 'overlay' | 'onRing'>, history: ActionRecord[] = driveHistory,
 ): Promise<{ outcome: exec.ExecResult; t3: number; settleMs: number }> {
   const before = { url: location.href, scrollY: window.scrollY };
   const { op, el } = action;
@@ -116,34 +135,68 @@ export async function act(
 
   const settled = await exec.settle(hooks.overlay, before);
   history.push({
-    op, target: describeTarget(action.row), value: action.text ?? action.option?.label,
+    op, target: action.row?.name || describeTarget(action.row), value: action.text ?? action.option?.label, usedPref: action.usedPref,
     outcome: !outcome.ok ? 'failed' : settled.changed ? 'changed' : 'no_change', ts: Date.now(),
   });
   return { outcome, t3, settleMs: settled.ms };
 }
 
+const VERB: Partial<Record<Operation, string>> = { SCROLL_DOWN: 'Scrolled down', SCROLL_UP: 'Scrolled up', GO_BACK: 'Went back' };
+function trailText(op: Operation, row?: ElementRow, value?: string): string {
+  if (VERB[op]) return VERB[op]!;
+  if (op === 'TYPE') return `Typed "${value}"`;
+  if (op === 'SELECT') return `Chose ${value}`;
+  return row?.group && ['checkbox', 'radio', 'switch'].includes(row.role) ? `${row.group.replace(/\s*\(.*\)/, '')}: ${row.name}` : `Opened ${row?.name ?? ''}`;
+}
+
 export async function runLoop(
-  input: { utterance: string; leash: Leash; maxSteps: number; heard: Heard; prepared?: Promise<Decision>; specMissed?: boolean; signal?: AbortSignal },
+  input: { utterance?: string; goal?: string; leash: Leash; maxSteps: number; heard: Heard; prepared?: Promise<Decision>; specMissed?: boolean; signal?: AbortSignal },
   hooks: LoopHooks,
 ): Promise<Trace> {
+  const task = input.leash === 'task';
+  const said = input.utterance ?? input.goal ?? '';
+  const history: ActionRecord[] = task ? [] : driveHistory; // loop detection looks at this task only
+  const asked: string[] = []; // group keys asked or skipped in this task
+  const memoryTried = new Set<string>();
+  const started = performance.now();
+  let waited = 0; // time spent waiting for the user does not count against the task clock
   let trace!: Trace;
+  const end = (result: Trace['result'], note?: string): Trace => { trace = { ...trace, result, note: note ?? trace.note }; hooks.onStep(trace); return trace; };
+
   for (let step = 0; step < input.maxSteps; step++) {
+    if (step === 1) hooks.onDriving(); // the frame appears only when a second step begins
+    const snap = takeSnapshot({ overlay: hooks.overlay, focused: hooks.pageFocus() });
+    trace = {
+      utterance: said, leash: input.leash, step, heard: input.heard, speculative: 'none', rows: snap.snapshot.rows.length,
+      snapshotMs: snap.ms, t1: performance.now(), t2: performance.now(), rowNames: new Map(), result: 'error', note: '',
+    };
+    if (input.signal?.aborted) return end('stopped', 'stopped before acting');
+    if (task && performance.now() - started - waited > MAX_TASK_MS) return end('stuck', `the task ran past ${MAX_TASK_MS / 1000} s`);
+
+    // Saved preferences are applied in code, before Jev is asked for the next operation.
+    if (task) {
+      const applied = await applyMemory(snap, hooks, history, memoryTried);
+      if (applied) { trace = { ...trace, t3: applied.t3, settleMs: applied.settleMs, winner: applied.line, result: 'acted', note: applied.note }; hooks.onStep(trace); continue; }
+    }
+
     // A decision made on a matching interim transcript is reused; otherwise decide now.
     let decision = step === 0 && input.prepared ? await input.prepared : undefined;
     const speculative = step !== 0 ? 'none' : input.prepared ? (decision?.response ? 'hit' : 'miss') : input.specMissed ? 'miss' : 'none';
-    if (!decision?.response) decision = await decideOnce(input.utterance, input.leash, hooks, input.signal);
-    const { snap, cands, rowsById, response } = decision;
+    if (!decision?.response) {
+      decision = await decideOnce({ utterance: input.utterance, goal: input.goal, leash: input.leash, history, asked, prefs: task ? hooks.prefs() : [] }, hooks, input.signal, snap);
+    }
+    const { cands, rowsById, response } = decision;
+    const nodes = decision.snap.nodes;
+    trace = { ...trace, speculative, rows: decision.snap.snapshot.rows.length, snapshotMs: decision.snap.ms, t1: decision.t1, t2: decision.t2, response, rowNames: decision.rowNames, note: decision.error ?? '' };
+    if (input.signal?.aborted) return end('stopped', 'stopped before acting');
+    if (!response) return end('error');
 
-    trace = {
-      utterance: input.utterance, leash: input.leash, heard: input.heard, speculative,
-      rows: snap.snapshot.rows.length, snapshotMs: snap.ms, t1: decision.t1, t2: decision.t2,
-      response, rowNames: decision.rowNames, result: 'error', note: decision.error ?? '',
-    };
-    if (input.signal?.aborted) return { ...trace, result: 'stopped', note: 'stopped before acting' };
-    if (!response) return trace;
-
+    const names: Record<string, string> = {};
+    for (const r of decision.snap.snapshot.rows) names[r.id] = r.name;
+    for (const s of cands.select) names[s.label] = s.optionLabel;
     const resolution = resolve(response.heads, {
-      leash: input.leash, utterance: input.utterance, useKind: true, groups: groupsByLabel(cands),
+      leash: input.leash, utterance: input.utterance, goal: input.goal, useKind: !task, groups: groupsByLabel(cands),
+      names, needs: response.needs, asked, history,
     });
     trace.resolution = resolution;
     trace.note = resolution.reason;
@@ -151,56 +204,110 @@ export async function runLoop(
     const optionFor = (label: string): Option | undefined => {
       const pick = cands.select.find((s) => s.label === label);
       const row = pick?.row ?? rowsById.get(label);
-      const el = row && snap.nodes.get(row.id);
-      return row && el ? { label, line: rowLine(row), row, el, option: pick && snap.options.get(pick.label) } : undefined;
+      const el = row && nodes.get(row.id);
+      return row && el ? { label, line: rowLine(row), row, el, option: pick && decision!.snap.options.get(pick.label) } : undefined;
     };
 
-    if (resolution.type === 'Disambiguate') {
+    let next: Resolution = resolution;
+
+    if (next.type === 'Disambiguate') {
       // Jev's Choice names one winner even when several candidates fit equally well, so ask a
-      // yes/no question about each candidate like it. Two or more fit: badge the best two.
-      // Exactly one fits: that is the answer. None fit: give up.
-      let pair = resolution.candidates;
+      // yes/no question about each candidate like it, then decide with the answers.
+      let pair = next.candidates;
       const anchor = rowsById.get(pair[0]);
+      let ranked: ElementRow[] | undefined;
       if (anchor && !anchor.options) {
         const pool = fitPool(anchor.role === 'textbox' || anchor.role === 'searchbox' ? cands.type : cands.click, anchor, [anchor.id]);
-        const checked = await fitCheck(input.utterance, pool, input.signal);
+        const checked = await fitCheck(said, pool, input.signal);
         if (checked) {
-          const ranked = rankFits(pool, checked.fits);
+          ranked = rankFits(pool, checked.fits);
           trace.fit = { ms: checked.ms, asked: pool.length, fits: ranked.slice(0, 6).map((r) => ({ line: rowLine(r), noul: checked.fits[r.id] ?? 0 })) };
           if (ranked.length >= 2) pair = [ranked[0]!.id, ranked[1]!.id];
-          else if (ranked.length === 1 && resolution.op === 'CLICK') {
-            const only = optionFor(ranked[0]!.id)!;
-            trace.winner = only.line;
-            trace.note += `; fit check: only one of ${pool.length} candidates fits, so act on it`;
-            const done = await act({ op: 'CLICK', row: only.row, el: only.el }, hooks);
-            return { ...trace, t3: done.t3, settleMs: done.settleMs, result: done.outcome.ok ? 'acted' : 'failed' };
-          } else if (ranked.length === 0) return { ...trace, result: 'ignored', note: `${trace.note}; fit check: none of ${pool.length} candidates fits` };
         }
       }
-      const [a, b] = pair.map(optionFor);
-      const span = response.heads.typed_span?.choice;
-      if (a && b) trace.disambiguation = { op: resolution.op, options: [a, b], text: resolution.op === 'TYPE' ? span : undefined };
-      return { ...trace, result: a && b ? 'asked' : 'ignored' };
+      if (ranked?.length === 0) return end(task ? 'stuck' : 'ignored', `${trace.note}; fit check: no candidate fits`);
+      if (ranked?.length === 1 && next.op === 'CLICK') {
+        next = { type: 'Act', op: 'CLICK', target: ranked[0]!.id, reason: `${trace.note}; fit check: only one candidate fits, so act on it` };
+      } else if (task) {
+        // Several fitting options in one unset group: the user decides. Anything else is not ours to guess.
+        const group = ranked && ranked.every((r) => r.group === ranked![0]!.group) ? ranked[0]!.group : undefined;
+        const key = group && labelKey(group);
+        if (key && unsetGroups(decision.snap.snapshot).some((g) => g.key === key) && !asked.includes(key)) {
+          next = { type: 'Ask', group: key, reason: `${trace.note}; fit check: ${ranked!.length} options of "${group}" fit and none is determined` };
+        } else return end('stuck', `${trace.note}; several candidates fit and it is not a question the page can ask`);
+      } else {
+        const [a, b] = pair.map(optionFor);
+        const span = response.heads.typed_span?.choice;
+        if (a && b) trace.disambiguation = { op: next.op, options: [a, b], text: next.op === 'TYPE' ? span : undefined };
+        return end(a && b ? 'asked' : 'ignored');
+      }
+      trace.note = next.reason;
     }
-    if (resolution.type === 'StartTask') return { ...trace, result: 'task', note: `${resolution.reason}. Delegate mode arrives in M3.` };
-    if (resolution.type === 'HandBack') return { ...trace, result: resolution.outcome === 'stopped' ? 'stopped' : 'ignored' };
-    if (resolution.type === 'Ignore' || resolution.type === 'Ask' || resolution.type === 'Answer') return { ...trace, result: 'ignored' };
+
+    if (next.type === 'Ask') {
+      const key = next.group;
+      const group = controlGroups(decision.snap.snapshot).find((g) => g.key === key);
+      asked.push(key);
+      if (!group) continue;
+      const t = performance.now();
+      const answer = await hooks.ask(group, next.reason);
+      waited += performance.now() - t;
+      if (answer.type === 'stopped') return end('stopped', 'stopped while waiting for an answer');
+      if (answer.type === 'giveup') return end('stuck', `could not understand the answer to "Which ${group.label}?"`);
+      if (answer.type === 'skip') { hooks.onTrail(`${group.label}: skipped`); hooks.onStep({ ...trace, result: 'asked' }); continue; }
+      const el = nodes.get(answer.row.id);
+      const done = await act({ op: 'CLICK', row: answer.row, el }, hooks, history);
+      if (done.outcome.ok) { hooks.savePref(group.label, answer.row.name); hooks.onTrail(`${group.label}: ${answer.row.name} (saved)`); }
+      trace = { ...trace, t3: done.t3, settleMs: done.settleMs, winner: rowLine(answer.row), result: done.outcome.ok ? 'acted' : 'failed', note: `${next.reason}; the user answered "${answer.row.name}"` };
+      hooks.onStep(trace);
+      continue;
+    }
+
+    if (next.type === 'StartTask') return end('task');
+    if (next.type === 'HandBack') return end(next.outcome);
+    if (next.type === 'Ignore' || next.type === 'Answer') return end('ignored');
 
     // Act, or type the transcript as it is into the focused field. Labels are only ever looked up.
     let done: Awaited<ReturnType<typeof act>>;
-    if (resolution.type === 'Dictate') {
-      const row = rowsById.get(snap.snapshot.focused ?? '');
+    if (next.type === 'Dictate') {
+      const row = rowsById.get(decision.snap.snapshot.focused ?? '');
       if (row) trace.winner = rowLine(row);
-      done = await act({ op: 'TYPE', row, el: row && snap.nodes.get(row.id), text: resolution.text, append: true }, hooks);
+      done = await act({ op: 'TYPE', row, el: row && nodes.get(row.id), text: next.text, append: true }, hooks, history);
+      if (done.outcome.ok) hooks.onTrail(`Typed "${next.text}"`);
     } else {
-      const chosen = resolution.target ? optionFor(resolution.target) : undefined;
+      const chosen = next.target ? optionFor(next.target) : undefined;
+      if (task && chosen && denied(chosen.row.name, input.goal ?? '')) return end('yours', `${trace.note}; "${chosen.row.name}" is on the deny-list`);
       if (chosen) trace.winner = chosen.line;
-      done = await act({ op: resolution.op, row: chosen?.row, el: chosen?.el, option: chosen?.option, text: resolution.text }, hooks);
+      done = await act({ op: next.op, row: chosen?.row, el: chosen?.el, option: chosen?.option, text: next.text }, hooks, history);
+      if (done.outcome.ok) hooks.onTrail(trailText(next.op, chosen?.row, next.text ?? chosen?.option?.label));
     }
     trace.t3 = done.t3;
     trace.settleMs = done.settleMs;
     trace.result = done.outcome.ok ? 'acted' : 'failed';
-    if (!done.outcome.ok) trace.note += ` — failed: ${done.outcome.reason}`;
+    if (!done.outcome.ok) trace.note += `; failed: ${done.outcome.reason}`;
+    hooks.onStep(trace);
   }
-  return trace;
+  return task ? end('stuck', `reached the cap of ${input.maxSteps} steps`) : trace;
+}
+
+// If an unset group's label equals a saved preference's label, act on the option whose name equals
+// the saved value. No name matches exactly: ask /api/match. One attempt per group per task.
+async function applyMemory(snap: Snap, hooks: LoopHooks, history: ActionRecord[], tried: Set<string>) {
+  const prefs = hooks.prefs();
+  for (const group of unsetGroups(snap.snapshot)) {
+    const pref = prefs.find((p) => labelKey(p.label) === group.key);
+    if (!pref || tried.has(group.key)) continue;
+    tried.add(group.key);
+    let row = group.rows.find((r) => normalise(r.name) === normalise(pref.value));
+    if (!row) {
+      const choice = await hooks.matchOption(group.label, group.rows.map((r) => r.name), pref.value);
+      row = group.rows.find((r) => r.name === choice);
+    }
+    if (!row) continue;
+    const done = await act({ op: 'CLICK', row, el: snap.nodes.get(row.id), usedPref: `${group.label}: ${pref.value}` }, hooks, history);
+    if (!done.outcome.ok) continue;
+    hooks.onTrail(`Used your saved ${group.label.toLowerCase()}: ${row.name}`, 'memory');
+    return { ...done, line: rowLine(row), note: `saved preference ${group.label} = ${pref.value}, applied in code with no model call` };
+  }
+  return undefined;
 }

@@ -9,6 +9,12 @@ describe('placement: on screen means at least half visible', () => {
   it('counts a box that is exactly half inside as visible', () => expect(placement(box(-100), vp)).toBe('visible'));
   it('marks a box that is mostly above as above', () => expect(placement(box(-150), vp)).toBe('above'));
   it('marks a box that is mostly below as below', () => expect(placement(box(750), vp)).toBe('below'));
+  it('counts a control inside the sticky header itself as visible', () => {
+    // The search box lives in a 67 px sticky header. It is on screen wherever the page is scrolled to.
+    const searchBox = { top: 14, left: 120, width: 260, height: 36 };
+    expect(placement(searchBox, { ...vp, insetTop: 67 })).toBe('above'); // the bug: measured as page content
+    expect(placement(searchBox, { ...vp, insetTop: 67 }, true)).toBe('visible'); // pinned: measured against the viewport
+  });
   it('treats the area under a sticky header as hidden', () => {
     expect(placement(box(0, 100), { ...vp, insetTop: 60 })).toBe('above');
     expect(placement(box(40, 100), { ...vp, insetTop: 60 })).toBe('visible');

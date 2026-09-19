@@ -26,19 +26,19 @@ function isUsable(el: Element): boolean {
 }
 
 // A fixed or sticky bar across the top of the viewport hides what is under it.
-function insetTop(overlay: Element): number {
+function topBar(overlay: Element): { el?: Element; bottom: number } {
   for (const hit of document.elementsFromPoint(window.innerWidth / 2, 2)) {
     if (hit === overlay || overlay.contains(hit)) continue;
     for (let n: Element | null = hit; n && n !== document.body; n = n.parentElement) {
       const position = getComputedStyle(n).position;
       if (position === 'fixed' || position === 'sticky') {
         const r = n.getBoundingClientRect();
-        if (r.top <= 0 && r.bottom < window.innerHeight / 2) return r.bottom;
+        if (r.top <= 0 && r.bottom < window.innerHeight / 2) return { el: n, bottom: r.bottom };
       }
     }
     break;
   }
-  return 0;
+  return { bottom: 0 };
 }
 
 function stateOf(el: Element, role: string): string | undefined {
@@ -64,7 +64,8 @@ type Item = { el: Element; role: string; place: Placement; top: number; bottom: 
 
 export function takeSnapshot(opts: { overlay: Element; focused?: Element | null }): Snap {
   const started = performance.now();
-  const vp: Viewport = { width: window.innerWidth, height: window.innerHeight, insetTop: insetTop(opts.overlay) };
+  const bar = topBar(opts.overlay);
+  const vp: Viewport = { width: window.innerWidth, height: window.innerHeight, insetTop: bar.bottom };
   const modal = Array.from(document.querySelectorAll('dialog[open]')).find((d) => d.matches(':modal'));
   const scope: ParentNode = modal ?? document;
 
@@ -74,7 +75,8 @@ export function takeSnapshot(opts: { overlay: Element; focused?: Element | null 
     if (!isUsable(el)) return;
     const r = el.getBoundingClientRect();
     if (r.width === 0 && r.height === 0) return;
-    items.push({ el, role: roleOf(el), place: placement(r, vp), top: r.top, bottom: r.bottom });
+    // Controls inside the sticky bar are on screen; only content scrolled under it is hidden.
+    items.push({ el, role: roleOf(el), place: placement(r, vp, !!bar.el?.contains(el)), top: r.top, bottom: r.bottom });
   });
 
   // Ordinals for repeated siblings, inside the main content when the page marks it.

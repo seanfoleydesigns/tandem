@@ -176,3 +176,59 @@ Started 14:15, finished 14:28 EDT (about 13 min against a 25 min box). Real-voic
 
 - DICTATION routes on the top choice with no floor, and once won at 0.38. If it misfires with real speech, give it a minimum like TASK's.
 - Real recognizer behaviour (restart gaps, finalisation delay, how often the final differs from the last interim) is unmeasured until the Chrome run.
+
+**Sean's real-voice run in Chrome (reported before M3).** All six M1 commands work by voice. Real finalisation delay is about 610 ms from the last interim to the final transcript. The speculative decide hit and was ready about 300 ms before the final; final to action was 2 ms; Jev was 171 ms of a 175 ms round trip. So end of speech to action is about 0.6 s, nearly all of it Chrome's finalisation. Stop on an interim, badges with "two" and the echo guard all worked, and recognition restarted by itself after silence. One bug found: the search box in the sticky header was marked "off-screen above" while visible (fixed in M3).
+
+## 2026-09-19 · M3: delegate
+
+Started 14:42, finished 14:59 EDT (about 17 min against a 50 min box). Checked with the dev simulator; the spec's M3 acceptance by real voice is Sean's to run in Chrome.
+
+**Bug fix first: sticky header controls marked "off-screen above".** Visibility was already measured with `getBoundingClientRect` against the viewport, but I subtract the strip a sticky or fixed header covers, so that a card scrolled under the header does not count as "first visible". That strip was also being subtracted for the header's own controls, so the search box (top 14 px, inside a 67 px header) came out as hidden. `placement()` now takes a `pinned` flag, set for elements inside the bar, which are measured against the plain viewport. Unit tested with the search box's real geometry.
+
+**Built**
+
+- Asking, redesigned around the M2 finding that a Choice collapses onto one winner. The `ask_group` Choice and the ASK_USER operation are gone. Every task-leash decide request carries two Nouls per unset control group, and code combines them: `needs = personal × (1 − given)`. Policy: any `needs` at or above `ASK_MIN` 0.7, for a group not yet asked or skipped in this task, is an Ask about the highest one. That beats DONE, STUCK, a weak operation, and a click inside that group; a confident click elsewhere goes first. DONE is accepted only when nothing reaches `ASK_MIN`.
+- `shared/groups.ts`: control groups from the snapshot (two or more checkboxes, radios or switches under one label), set or unset, with "Size (required)" and "Size" treated as one label.
+- Memory in code, before Jev: at the start of each task step, an unset group whose label equals a saved preference's label gets the option whose name equals the saved value clicked; if no name matches exactly, `/api/match` decides. One attempt per group per task. Trail chip "Used your saved size: 10.5". No model call.
+- Task leash: the same `runLoop`, 25 steps, 60 s with waiting time excluded. Task state is `goal`, `constraints`, `prefs`, `history`, `snapshot`. TYPE is not offered (no text source until M4). The task-leash fit check: several fitting options in one unset group is an Ask; one fit, act; otherwise STUCK.
+- Question card built from the group's own label and option names, "Which size?" spoken, tap or say, Skip. `/api/match` with `skip` and `unclear`; an exact option name is matched in code first. Unclear pulses the chips and says "Tap one, or say it again."; two failures hand back.
+- Preferences in localStorage scoped to the hostname; memory panel with delete. Hand-back says "Your turn." and shows "Narrow by" chips from the unset groups; a chip can be tapped or said, asks that group, applies the answer and stays in drive mode (not saved as a preference).
+- Deny-list and loop detection in `shared/policy.ts` (pure, tested). Stop button visible whenever the agent drives or waits; Esc and the stop words do the same and also settle an open question. The driving frame appears only when a second step begins. Status pill: "You're driving" / "Tandem is driving. Say stop." / "Waiting for you". Action trail: the last five things done.
+- `DICTATION_MIN` 0.6, like TASK's floor.
+- Store: a category link now keeps the filters already applied (it used to drop them), as a well-made shop would.
+- 94 unit tests (added: groups, needs precedence, DONE gating, deny-list, loop detection, DICTATION floor, pinned visibility).
+
+**Acceptance, by simulated voice**
+
+| Check | Result |
+|---|---|
+| Hero run 1: "find me white shoes" | Colour: White, then the frame appeared at the second step, then "Which size?" with the store's 13 size chips after 1.4 s, pill "Waiting for you", Stop visible. "ten and a half" → 10.5 selected and saved. DONE, "Your turn.", Narrow by Brand, Closure, Price. URL `/?colour=white&size=10.5`. |
+| Hero run 2, same session: "find me black boots" from a fresh listing | Never asked for size. Trail: "Used your saved size: 10.5" (memory chip), "Opened Boots", "Colour: Black". 4 black boots in 10.5, "Your turn." in 2.1 s. |
+| A third task, unplanned: "find me brown loafers" | Saved size, Loafers, Colour: Brown. Done. |
+| "stop" mid-task | Said after the first action landed: no further action, result stopped, "Stopped. Your turn." |
+| Task that reaches the cart: "I need to buy the shoes in my cart" | Jev chose CLICK Checkout at confidence 1.00. Deny-list handed back: "This one's yours." The dialog never opened. |
+| Delete the saved size | Memory (1) → Delete → Memory (0). The next task asked "Which size?" again. |
+| Skip | "Size: skipped", DONE, nothing saved, Size then listed under Narrow by. |
+| Narrow by, by voice: "brand" | Card "Which brand?" with the store's five brands. "the purple one maybe" → chips pulsed, card stayed open. "arco please" → Brand: Arco applied, not saved. |
+
+**What broke, and the wording changes**
+
+1. **The specified needs sentence did not clear 0.7.** "A value for Size is essential for the results to be usable by this user (for example a size that must fit), and neither `goal`, `constraints` nor `prefs` determines it" gave Size 0.26 to 0.39, against 0.10 to 0.21 for Brand, Closure and Price: the right order, nowhere near `ASK_MIN`. The first hero run sailed past size to DONE. Wording before thresholds, so I probed variants (`scripts/probe-needs.ts`, four goals, all groups, one request each):
+   - "essential…" or "results that ignore it would be unusable" on their own are read as "relevant to the goal": Size 0.20 to 0.25 normally, 0.91 when the goal *mentions* a size. Backwards.
+   - "`goal` states which Size the user wants": 0.93 when it does, 0.03 when it does not. Brand 0.92 for "…from Arco". Price 0.33 to 0.39 for "cheap".
+   - "Size is a measurement of the person who will use the product, such as a shoe size or clothing size that must fit. It is not a preference such as colour, brand, style, material or price.": Size 0.92 to 0.98, every other group 0.02 to 0.03, whatever the goal says. It does not mention the goal at all, which is why it does not drift.
+   The docs' advice for exactly this (literal reading, negations, indirection) is to split into literal questions and combine in code. So: two Nouls, `needs = personal × (1 − given)`. "find me white shoes" gives Size about 0.89; "…in size 10" gives about 0.07. `prefs` needs no question because code applies saved preferences first. `ASK_MIN` stays at the 0.7 Sean set.
+   Limit, stated plainly: *personal* is about things that must fit a person. A different kind of essential value (a delivery date, a storage size) would need its own statement.
+2. My test harness hung once: it waited for the trail to grow, but the trail only ever shows five chips. The agent was fine. Noted because the first symptom looked like a stuck task.
+
+**Surprises about Jev**
+
+- `/api/match` mapped "ten and a half" to "10.5" and "arco please" to "Arco", and returned `unclear` for "the purple one maybe".
+- On the task leash Jev's operation and target heads were decisive: 0.98 to 1.00 for White, Boots, Black, Checkout and DONE. The uncertainty in this milestone was all in *whether to ask*, which is why that moved to Nouls.
+- Task steps cost about one decide each (roughly 200 to 450 ms) plus settle; the second hero run took 2.1 s for three actions and a DONE.
+
+**Open items**
+
+- In drive mode the deny-list does not apply, as specified: "get me checked out" was routed as an ACTION and clicked Checkout (the demo dialog opened). If "it never buys" should hold in drive mode too, that is a one-line change; Sean's call.
+- If the second task starts on a page where Size is already set from the first answer, memory has nothing to apply and no memory chip appears. The run above started from a fresh listing.
+- `ids` label style was not re-tested on the task leash.

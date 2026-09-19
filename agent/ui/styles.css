@@ -18,10 +18,12 @@
   color: var(--t-ink);
 }
 
-.bar {
+.dock {
   position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+  display: grid; gap: 6px; width: min(760px, calc(100vw - 28px));
+}
+.bar {
   display: flex; align-items: center; gap: 8px;
-  width: min(640px, calc(100vw - 28px));
   padding: 6px 8px; border: 1px solid var(--t-line); border-radius: 10px;
   background: var(--t-paper); box-shadow: 0 6px 24px rgb(0 0 0 / 0.18);
   pointer-events: auto;
@@ -69,3 +71,38 @@
   box-shadow: 0 2px 8px rgb(0 0 0 / 0.35); pointer-events: auto;
 }
 .badge[hidden] { display: none; }
+
+/* M3: delegate */
+.frame { position: fixed; inset: 0; border: 0 solid transparent; transition: border-color 0.2s, border-width 0.2s; }
+.frame.agent { border: 5px solid var(--t-accent); animation: t-drive 1.4s ease-in-out infinite; }
+.frame.waiting { border: 5px solid var(--t-warn); }
+@keyframes t-drive { 50% { border-color: rgb(59 91 219 / 0.35); } }
+.pill.agent { background: var(--t-accent); color: #fff; }
+.pill.waiting { background: #fff4e0; color: var(--t-warn); }
+.bar .stop { background: var(--t-listen); border-color: var(--t-listen); color: #fff; font-weight: 700; }
+.bar .stop[hidden] { display: none; }
+
+.trail, .narrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; pointer-events: auto; }
+.narrow[hidden] { display: none; }
+.narrow > span { font-weight: 600; background: var(--t-paper); padding: 2px 6px; border-radius: 6px; }
+.step { padding: 2px 8px; border-radius: 999px; background: var(--t-paper); border: 1px solid var(--t-line); box-shadow: 0 1px 4px rgb(0 0 0 / 0.12); }
+.step.memory { border-color: var(--t-ok); color: var(--t-ok); font-weight: 600; }
+.chip { font: inherit; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--t-accent); background: var(--t-paper); color: var(--t-accent); cursor: pointer; }
+.chip:hover { background: #eef1fb; }
+
+.card, .memory {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: 110px; width: min(520px, calc(100vw - 28px));
+  padding: 12px 14px; border: 1px solid var(--t-line); border-radius: 10px; background: var(--t-paper);
+  box-shadow: 0 8px 30px rgb(0 0 0 / 0.25); pointer-events: auto;
+}
+.card[hidden], .memory[hidden] { display: none; }
+.card h2, .memory h2 { font: inherit; font-weight: 700; font-size: 15px; margin: 0 0 8px; }
+.card .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.card p, .memory p { margin: 10px 0 0; color: #555a66; }
+.card .skip, .memory button { font: inherit; padding: 2px 8px; border: 1px solid var(--t-line); border-radius: 6px; background: #f5f6fa; cursor: pointer; }
+.card.pulse .chip { animation: t-pulse 0.5s ease-in-out 2; }
+@keyframes t-pulse { 50% { background: var(--t-accent); color: #fff; } }
+.memory { bottom: 110px; left: auto; right: 14px; transform: none; width: 300px; }
+.memory ul { margin: 0; padding: 0; list-style: none; }
+.memory li { display: flex; gap: 6px; align-items: center; padding: 3px 0; }
+.memory li button { margin-left: auto; }

@@ -1,7 +1,7 @@
 import express from 'express';
 import { HEALTH_STATE, healthQuestions } from '../shared/questions';
-import type { DecideRequest, FitsRequest, HealthResponse } from '../shared/types';
-import { decide, decideRequest, fits, fitsRequest } from './decide';
+import type { DecideRequest, FitsRequest, HealthResponse, MatchRequest } from '../shared/types';
+import { decide, decideRequest, fits, fitsRequest, match, matchRequest } from './decide';
 import { ask, describeError, warm } from './jev';
 
 const PORT = 8787;
@@ -52,6 +52,20 @@ app.post('/api/fits', async (req, res) => {
   }
   try {
     res.json(await fits(parsed.data as FitsRequest));
+  } catch (err) {
+    res.status(502).json({ ok: false, ...describeError(err) });
+  }
+});
+
+// Which option does a spoken answer mean? Used by the question card and by saved preferences.
+app.post('/api/match', async (req, res) => {
+  const parsed = matchRequest.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.issues.map((i) => i.path.join('.') + ': ' + i.message).join('; ') });
+    return;
+  }
+  try {
+    res.json(await match(parsed.data as MatchRequest));
   } catch (err) {
     res.status(502).json({ ok: false, ...describeError(err) });
   }

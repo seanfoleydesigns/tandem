@@ -79,7 +79,7 @@ describe('rule 4: ambiguity inside one group becomes a question', () => {
     expect(massSet(split.click_target!)).toEqual(['e1', 'e2']);
   });
   it('task mode asks about the shared group', () => {
-    expect(resolve(split, { ...task, groups })).toMatchObject({ type: 'Ask', group: 'Size' });
+    expect(resolve(split, { ...task, groups })).toMatchObject({ type: 'Ask', group: 'size' });
   });
   it('drive mode disambiguates the top two', () => {
     expect(resolve(split, { ...drive, groups })).toMatchObject({ type: 'Disambiguate', candidates: ['e1', 'e2'] });
@@ -88,9 +88,9 @@ describe('rule 4: ambiguity inside one group becomes a question', () => {
     const peaked: Heads = { operation: sure('CLICK'), click_target: head({ e1: 0.7, e2: 0.25, none: 0.05 }, 0.78) };
     expect(resolve(peaked, { ...task, groups })).toMatchObject({ type: 'Act', target: 'e1' });
   });
-  it('does not ask when the candidates span groups', () => {
+  it('does not ask outright when the candidates span groups; the loop checks which ones fit first', () => {
     const mixed: Heads = { operation: sure('CLICK'), click_target: head({ e1: 0.45, e4: 0.45, none: 0.1 }, 0.3) };
-    expect(resolve(mixed, { ...task, groups })).toMatchObject({ type: 'HandBack', outcome: 'stuck' });
+    expect(resolve(mixed, { ...task, groups })).toMatchObject({ type: 'Disambiguate', candidates: ['e1', 'e4'] });
   });
 });
 
@@ -99,7 +99,7 @@ describe('rule 5: other low-confidence targets', () => {
   it('drive mode disambiguates the top two', () => {
     expect(resolve(mixed, drive)).toMatchObject({ type: 'Disambiguate', candidates: ['e1', 'e4'] });
   });
-  it('task mode is stuck', () => expect(resolve(mixed, task)).toMatchObject({ type: 'HandBack', outcome: 'stuck' }));
+  it('task mode also hands the pair to the fit check', () => expect(resolve(mixed, task)).toMatchObject({ type: 'Disambiguate' }));
   it('a weak none with one real candidate is ignored in drive mode', () => {
     const heads: Heads = { operation: sure('CLICK'), click_target: head({ none: 0.55, e1: 0.45 }, 0.1) };
     expect(resolve(heads, drive).type).toBe('Ignore');

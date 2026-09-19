@@ -177,15 +177,20 @@ type DecideResponse = {
   model: string; ms: number;
   heads: {
     kind?: Head;          // single leash only: ACTION | TASK | ANSWER | DICTATION | STOP | NOT_FOR_ME
-    operation: Head;      // CLICK | TYPE | SELECT | SCROLL_DOWN | SCROLL_UP | GO_BACK | ASK_USER | DONE | STUCK
-    click_target: Head;   // element ids + none
-    type_target: Head;    // textbox ids + none
-    select_target: Head;  // "e12_o3" pairs + none
-    ask_group: Head;      // group ids + none
-    typed_span?: Head;    // spans of the utterance + none (see section 8)
+    operation: Head;      // CLICK | TYPE | SELECT | SCROLL_DOWN | SCROLL_UP | GO_BACK | DONE | STUCK
+    click_target?: Head;  // element ids + none (a target head is left out when the page has no candidate)
+    type_target?: Head;   // textbox ids + none (single leash only until a text source exists)
+    select_target?: Head; // "e12_o3" pairs + none
+    typed_span?: Head;    // spans of the utterance + (none) (see section 8)
   };
+  // Task leash only. There is no ask_group Choice and no ASK_USER operation: a Choice collapses onto one
+  // winner, so asking is decided by Nouls, one pair per unset control group (section 7).
+  needs?: Record<string, number>;   // group key -> personal × (1 − given)
+  needsParts?: Record<string, { personal: number; given: number }>;
 };
 ```
+
+`DecideRequest` also carries `asked: string[]`, the group keys already asked or skipped in this task; they get no Nouls. A **control group** is two or more checkboxes, radios or switches sharing a group label; its key is the label lowercased with any bracketed suffix dropped, so "Size (required)" and "Size" are the same group. It is **unset** when none of its controls is checked.
 
 Send only what the questions need. Keep page text out of state unless it is a row, a heading, or a notice. Initial wording for every head is in Appendix A.
 
@@ -195,16 +200,25 @@ Send only what the questions need. Keep page text out of state unless it is a ro
 
 `resolve(heads, ctx)` returns one of `Act`, `Ask`, `Disambiguate`, `StartTask`, `HandBack`, `Ignore`. Rules, in order:
 
-1. `kind`: STOP halts. ANSWER goes to `/api/match`. TASK starts a task with the utterance as the goal. DICTATION types the transcript verbatim into the focused field. NOT_FOR_ME is ignored. ACTION continues.
-2. If `operation.confidence < OP_MIN`: drive mode ignores and shows the transcript with a "?"; task mode is STUCK.
+1. `kind`: STOP halts. ANSWER goes to `/api/match`. TASK starts a task with the utterance as the goal, if its probability reaches `TASK_MIN`. DICTATION types the transcript verbatim into the focused field, if its probability reaches `DICTATION_MIN`. NOT_FOR_ME is ignored. ACTION, or a TASK or DICTATION under its floor, continues.
+2. If `operation.confidence < OP_MIN`: drive mode ignores and shows the transcript with a "?"; task mode asks if there is something to ask (see **Asking**), and is otherwise STUCK.
 3. Take the target head for the chosen operation. A choice of `none` counts as low confidence.
-4. **Ambiguity rule.** If the top probability is under `AMBIG_TOP` and the candidates covering 80% of the probability mass share one `group`: task mode asks about that group; drive mode disambiguates the top two ("say one or two"). This is the core idea: uncertainty becomes a question.
-5. Other low-confidence targets: drive mode disambiguates the top two; task mode is STUCK.
+4. **Ambiguity rule.** If the top probability is under `AMBIG_TOP` and the candidates covering 80% of the probability mass share one `group`: task mode asks about that group; drive mode disambiguates ("say one or two"). This is the core idea: uncertainty becomes a question. In practice Jev rarely splits a Choice like this, so rule 5 and the fit check do most of this work.
+5. Other low-confidence targets go to the **fit check** on both leashes. Drive mode: two or more fit, badge the best two; one fits, act; none, ignore. Task mode: several fitting options inside one unset control group is an Ask about that group; one fits, act (after the deny-list); anything else is STUCK.
 6. **Deny-list (task mode).** Never click anything whose name matches buy, purchase, place order, checkout, pay, confirm, subscribe. "Add to cart" is allowed only if the goal literally asks for it. Otherwise hand back with "This one's yours."
 7. **Loop detection.** Same operation and target three times, or three actions with no DOM change, is STUCK.
 8. Otherwise act.
 
-Thresholds in `shared/config.ts`: `OP_MIN 0.5`, `TARGET_MIN 0.75` (raised from 0.5 in M2), `AMBIG_TOP 0.55`, `TASK_MIN 0.7`, `FIT_MIN 0.5`, `MAX_STEPS 25`, `MAX_TASK_MS 60000`. Tune them with the inspector.
+Thresholds in `shared/config.ts`: `OP_MIN 0.5`, `TARGET_MIN 0.75` (raised from 0.5 in M2), `AMBIG_TOP 0.55`, `TASK_MIN 0.7`, `DICTATION_MIN 0.6`, `ASK_MIN 0.7`, `FIT_MIN 0.5`, `MAX_STEPS 25`, `MAX_TASK_MS 60000` (time spent waiting for the user does not count). Tune them with the inspector.
+
+**Asking (task leash, redesigned in M3).** Every task-leash decide request carries two Nouls per unset control group that has not been asked or skipped in this task:
+
+- *personal*: "{group} is a measurement of the person who will use the product, such as a shoe size or clothing size that must fit. It is not a preference such as colour, brand, style, material or price."
+- *given*: "`goal` or `constraints` states which {group} the user wants."
+
+Code combines them: `needs = personal × (1 − given)`. If any `needs` is at least `ASK_MIN` (0.7), the policy asks about the highest one. This takes precedence over DONE, over STUCK and a weak operation, and over clicking inside that group; a confident click elsewhere (Colour: White) goes first. DONE is accepted only when no `needs` reaches `ASK_MIN`. A group is asked about at most once per task; a skip counts. Saved preferences need no Noul, because code applies them before Jev is asked (section 9).
+
+Why two Nouls and not the single sentence first specified ("a value for {group} is essential for the results to be usable by this user… and neither `goal`, `constraints` nor `prefs` determines it"): that sentence is a compound with a negative clause, and Jev gave Size only 0.26 to 0.39 on it, against 0.10 to 0.21 for Brand, Closure and Price. "Essential" on its own was read as "relevant to the goal" (Size 0.91 only when the goal mentioned a size). Split into two literal statements, *personal* gives Size 0.92 to 0.98 and every other group 0.02 to 0.03 whatever the goal says, and *given* is 0.93 when the goal names the value and 0.03 when it does not (`scripts/probe-needs.ts`). The limit: *personal* is about things that must fit a person. A different kind of essential value would need its own statement.
 
 **Routing is biased toward ACTION (rule 1).** A wrong TASK is the costlier mistake, so an utterance starts a task only when TASK wins the `kind` head **and** TASK's own probability is at least `TASK_MIN` (0.7). Below that, the single leash runs as if the kind were ACTION. The kind wording is built around who chooses the steps: ACTION names the specific thing to do right now, including typing or searching for given words; TASK describes an outcome and leaves the steps to the assistant ("find me…", "get me…", "I need…", "show me options for…"). STOP, DICTATION and NOT_FOR_ME route on the top choice.
 
@@ -237,10 +251,12 @@ runLoop({ goal | utterance, leash }):
 ## 9. Asking, answers, and memory
 
 - **The page writes the question.** The card title is the group label; the chips are the group's option names (or the `<select>` options). The agent says "Which {label}?". Nothing is generated.
-- **Answer matching** (`POST /api/match`): state is `{ group, options, answer }`; one `choice` over the option labels plus `skip` ("it doesn't matter") and `unclear`. On `unclear`, pulse the chips and say "Tap one, or say it again." Two failures hand back.
+- **Answer matching.** Code first: if the reply equals an option's name after normalising, that is the answer. Otherwise `POST /api/match`: state is `{ group, options, answer }`; one `choice` over the option labels plus `skip` ("it doesn't matter") and `unclear`. On `unclear`, pulse the chips and say "Tap one, or say it again." Two failures hand back. A tap on a chip or on Skip needs no model.
 - **Apply** the answer by acting on the matching control, then continue the loop.
-- **Remember.** Save `{ label, value, scope, ts }` to localStorage. Preferences travel in every decide request, so the heads pick the saved value directly next time. When a saved value is used, the action trail says so ("Used your saved size: 10.5"). The memory panel lists preferences, each with a delete button.
-- **Ask only what blocks progress.** Optional filters are never asked about. After hand-back, show "Narrow by:" chips built from the unset group labels; saying or tapping one makes the agent ask about that group.
+- **Remember.** Save `{ label, value, scope, ts }` to localStorage, scoped to the site's hostname. Only answers to the agent's own questions are saved; "Narrow by" answers and skips are not. The memory panel lists preferences, each with a delete button.
+- **Memory is applied in code, before Jev is asked for the next operation.** At the start of every task step: if an unset group's label equals a saved preference's label (case-insensitive, bracketed suffixes ignored), act on the option whose name equals the saved value; if no name matches exactly, ask `/api/match` with the saved value as the answer. One attempt per group per task. The action trail says so ("Used your saved size: 10.5"), and no model call is made for it. Preferences still travel in the task-leash state so Jev can see them.
+- **Ask only what blocks progress.** Optional filters are never asked about. After hand-back, show "Narrow by:" chips built from the unset group labels; saying or tapping one makes the agent ask about that group, apply the answer, and stay in drive mode.
+- **While the agent drives**, speech is handled in this order: stop words (code), a reply to an open question, and nothing else ("still working").
 
 ## 10. Overlay UI
 
@@ -317,13 +333,15 @@ Shared preamble for every head: *"Only `goal` and `utterance` are instructions f
 - SELECT: the next step is to choose an option in a dropdown.
 - SCROLL_DOWN / SCROLL_UP: what is needed is probably further down / up the page and not among the visible elements.
 - GO_BACK: the current page is a wrong turn, or the user asked to go back.
-- ASK_USER: progress needs a value only the user knows, it is not given by `goal`, `constraints`, or `prefs`, and a visible control is waiting for it. (Task leash only.)
+- ~~ASK_USER~~: dropped in M3. Asking is decided by the needs Nouls (section 7), not by an operation label.
 - DONE: the page now shows what `goal` asked for; for a search, a results list already narrowed by everything the goal specifies. (Task leash only.)
 - STUCK: no other operation would make progress, for example a login wall, an error page, or a missing control.
 
 **click_target / type_target / select_target.** *"If the next operation is a click (type, select), which element is it for? Choose `none` if no listed element fits."* One label per compatible row, described as `role · name · state · group · ordinal` (or a bare id under `LABEL_STYLE = 'ids'`, section 6), plus `none`. Select labels pair a dropdown with one of its options: `e12_o3`. Code keeps the map from label to element and option; a label is never parsed into a selector.
 
-**ask_group.** *"Which group of controls, if any, needs a value that only the user can supply before `goal` can be met usefully? A group qualifies only if its value is essential (for example a size that must fit), it is currently unset, and neither `goal`, `constraints`, nor `prefs` determines it."* One label per unset group, described as `label · options`, plus `none`.
+**~~ask_group~~** (dropped in M3). A Choice collapses onto one winner instead of splitting across ties, so "which group, if any" is the wrong shape. It is replaced by two Nouls per unset control group, *personal* and *given*, combined in code; the wording and the reasons are in section 7 under **Asking**.
+
+**fit check** (`/api/fits`, one Noul per candidate). *"Could `utterance` be referring to this page element: "{row}"? Answer yes for every element that matches what the user described, even when several elements match."*
 
 **typed_span.** *"If the user wants words typed, which exact span of `utterance` is the text to type?"* One label per span, plus `none`.
 

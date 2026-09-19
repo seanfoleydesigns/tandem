@@ -65,6 +65,13 @@ document.addEventListener('click', (e) => {
   const a = (e.target as Element).closest?.('a[href]') as HTMLAnchorElement | null;
   if (!a || a.target || a.hasAttribute('download') || a.origin !== location.origin) return;
   e.preventDefault();
+  // Choosing a category keeps the filters already applied on the listing.
+  if (a.closest('.cats') && location.pathname === '/') {
+    const params = new URLSearchParams(location.search);
+    params.delete('q');
+    params.set('category', new URLSearchParams(a.search).get('category') ?? '');
+    return navigate(`/?${params}`);
+  }
   navigate(a.pathname + a.search);
 });
 

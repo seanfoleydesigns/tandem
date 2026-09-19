@@ -1,23 +1,25 @@
 // From words to an action. Typed commands, the recognizer and the dev simulator all arrive here.
-// Order of business for every transcript: stop (code), "one / two" (code), then the one loop (Jev).
-import { INTERIM_STABLE_MS, WARM_EVERY_MS } from '../shared/config';
+// Order of business for every transcript: stop (code), an open question (code, then /api/match),
+// "one / two" (code), a "Narrow by" chip (code), then the one loop (Jev).
+import { INTERIM_STABLE_MS, MAX_STEPS, MAX_UNCLEAR, WARM_EVERY_MS } from '../shared/config';
+import { unsetGroups, type ControlGroup } from '../shared/groups';
+import { MATCH_SKIP, MATCH_UNCLEAR } from '../shared/questions';
 import { isStop, normalise, pickOneOrTwo } from '../shared/speech';
-import { act, decideOnce, runLoop, type Decision, type Disambiguation, type LoopHooks, type Trace } from './loop';
+import type { ElementRow, MatchResponse } from '../shared/types';
+import { act, decideOnce, runLoop, type AskResult, type Decision, type Disambiguation, type LoopHooks, type Trace } from './loop';
+import { deletePref, listPrefs, savePref } from './memory';
+import { takeSnapshot } from './snapshot';
 import type { Overlay } from './ui/overlay';
 import type { Voice } from './voice';
 
 export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
-  const hooks: LoopHooks = {
-    overlay: overlay.host,
-    labelStyle: overlay.labelStyle,
-    pageFocus: overlay.pageFocus,
-    onRing: overlay.ring,
-  };
-
   let busy = false;
   let abort: AbortController | undefined;
   let pending: Disambiguation | undefined; // badges are up, waiting for "one" or "two"
+  let question: { group: ControlGroup; hear: (text: string) => void; settle: (r: AskResult) => void } | undefined;
+  let narrow: ControlGroup[] = []; // "Narrow by" chips on screen after a hand-back
   let lastWarm = -Infinity;
+  const traces: Trace[] = []; // the decision log
 
   // The utterance being spoken right now.
   let interimText = '';
@@ -26,6 +28,67 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
   let spec: { text: string; promise: Promise<Decision>; controller: AbortController } | undefined;
   let swallowFinal = false; // the utterance was a stop; its final transcript is not a new command
   const waiters: ((t: Trace | undefined) => void)[] = [];
+
+  const showMemory = () => overlay.memory(listPrefs(), (label) => { deletePref(label); showMemory(); });
+
+  // /api/match: which option does this answer mean? Returns an option name, "skip", "unclear", or nothing on failure.
+  async function matchOption(group: string, options: string[], answer: string): Promise<string | undefined> {
+    try {
+      const res = await fetch('/api/match', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ group, options, answer }) });
+      return res.ok ? ((await res.json()) as MatchResponse).head.choice : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  // The question card. The page writes the question: the group's own label and option names.
+  function ask(group: ControlGroup, _reason: string): Promise<AskResult> {
+    return new Promise<AskResult>((resolve) => {
+      let unclear = 0;
+      const settle = (r: AskResult) => {
+        if (question?.group !== group) return;
+        question = undefined;
+        overlay.question(undefined);
+        overlay.setMode(busy ? 'agent' : 'user');
+        resolve(r);
+      };
+      const hear = async (text: string) => {
+        // Code first: the answer may simply be an option's name. Otherwise Jev matches it.
+        const exact = group.rows.find((r) => normalise(r.name) === normalise(text));
+        const choice = exact?.name ?? (await matchOption(group.label, group.rows.map((r) => r.name), text));
+        if (choice === MATCH_SKIP) return settle({ type: 'skip' });
+        const row = group.rows.find((r) => r.name === choice);
+        if (row) return settle({ type: 'answer', row });
+        unclear += 1;
+        if (choice !== MATCH_UNCLEAR && choice !== undefined) unclear = MAX_UNCLEAR; // an answer we cannot map: do not loop
+        if (unclear >= MAX_UNCLEAR) return settle({ type: 'giveup' });
+        overlay.pulseQuestion();
+        getVoice().speak('Tap one, or say it again.');
+      };
+      question = { group, hear: (t) => void hear(t), settle };
+      overlay.setMode('waiting');
+      overlay.question(
+        { title: group.label, options: group.rows.map((r) => r.name) },
+        (i) => settle({ type: 'answer', row: group.rows[i] as ElementRow }),
+        () => settle({ type: 'skip' }),
+      );
+      getVoice().speak(`Which ${group.label.toLowerCase()}?`);
+    });
+  }
+
+  const hooks: LoopHooks = {
+    overlay: overlay.host,
+    labelStyle: overlay.labelStyle,
+    pageFocus: overlay.pageFocus,
+    onRing: overlay.ring,
+    onStep: (trace) => { traces.push(trace); overlay.showTrace(trace); },
+    onTrail: overlay.trail,
+    onDriving: () => overlay.setMode('agent'),
+    prefs: listPrefs,
+    savePref: (label, value) => { savePref(label, value); showMemory(); },
+    ask,
+    matchOption,
+  };
 
   // An idle connection to Jev closes after a few seconds. Open it while the user is still talking or typing.
   function warm() {
@@ -40,15 +103,11 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
     spec = undefined;
   }
 
-  function resetUtterance() {
-    interimText = '';
-    lastInterimAt = undefined;
-    dropSpec();
-  }
-
-  function finish(trace: Trace | undefined) {
-    if (trace) overlay.showTrace(trace);
-    waiters.splice(0).forEach((w) => w(trace));
+  // Each command resolves the simulator promises that were waiting when it began, and only those.
+  async function handle(text: string, heard: Trace['heard']) {
+    const mine = waiters.splice(0);
+    let trace: Trace | undefined;
+    try { trace = await command(text, heard); } finally { mine.forEach((w) => w(trace)); }
   }
 
   // Stop is code: no model call. Halts whatever is in flight and clears any question on screen.
@@ -57,6 +116,7 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
     dropSpec();
     getVoice().cancelSpeech();
     if (pending) { pending = undefined; overlay.badges(undefined); }
+    question?.settle({ type: 'stopped' });
     overlay.showStatus(`Stopped (${source})`, 'ok');
   }
 
@@ -68,24 +128,72 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
     busy = true;
     try {
       const done = await act({ op: d.op, row: o.row, el: o.el, option: o.option, text: d.text }, hooks);
-      finish({
-        utterance: said, leash: 'single', heard, speculative: 'none', rows: 0, snapshotMs: 0, t1: heard.final, t2: heard.final,
+      if (done.outcome.ok) overlay.trail(`Opened ${o.row.name}`);
+      const trace: Trace = {
+        utterance: said, leash: 'single', step: 0, heard, speculative: 'none', rows: 0, snapshotMs: 0, t1: heard.final, t2: heard.final,
         t3: done.t3, settleMs: done.settleMs, winner: o.line, rowNames: new Map(),
         result: done.outcome.ok ? 'acted' : 'failed',
-        note: `"${said}" chose candidate ${index + 1} in code, with no model call${done.outcome.ok ? '' : ` — failed: ${done.outcome.reason}`}`,
-      });
+        note: `"${said}" chose candidate ${index + 1} in code, with no model call${done.outcome.ok ? '' : `; failed: ${done.outcome.reason}`}`,
+      };
+      hooks.onStep(trace);
+      return trace;
     } finally { busy = false; }
   }
 
-  async function command(text: string, heard: Trace['heard']) {
-    if (isStop(text)) { stop('said'); return finish(undefined); }
+  // The agent takes the wheel. Same loop, longer leash.
+  async function runTask(goal: string, heard: Trace['heard']): Promise<Trace> {
+    overlay.narrow(undefined);
+    narrow = [];
+    overlay.showStatus(`Task: “${goal}”`, 'ok');
+    const trace = await runLoop({ goal, leash: 'task', maxSteps: MAX_STEPS, heard, signal: abort!.signal }, hooks);
+    handBack(trace);
+    return trace;
+  }
+
+  // Hand back: mode = drive; say "Your turn."
+  function handBack(trace: Trace) {
+    overlay.setMode('user');
+    if (trace.result === 'stopped') return overlay.showStatus('Stopped. Your turn.', 'ok');
+    if (trace.result === 'yours') { getVoice().speak("This one's yours."); return overlay.showStatus("This one's yours.", 'ok'); }
+    getVoice().speak('Your turn.');
+    if (trace.result !== 'done') return overlay.showStatus(`Your turn. I got stuck: ${trace.note}`, 'unsure');
+    overlay.showStatus('Your turn.', 'ok');
+    // "Narrow by": the groups nobody has set. Optional filters are never asked about; the user may pick one.
+    narrow = unsetGroups(takeSnapshot({ overlay: overlay.host }).snapshot);
+    overlay.narrow(narrow.map((g) => g.label), (i) => void narrowBy(narrow[i]!));
+  }
+
+  // The user picked a "Narrow by" chip: ask about that group, apply the answer, stay in drive mode.
+  async function narrowBy(chip: ControlGroup) {
+    if (busy) return;
+    busy = true;
+    overlay.narrow(undefined);
+    try {
+      const snap = takeSnapshot({ overlay: overlay.host });
+      const group = unsetGroups(snap.snapshot).find((g) => g.key === chip.key);
+      if (!group) return;
+      const answer = await ask(group, 'the user chose to narrow by this group');
+      if (answer.type !== 'answer') return;
+      const done = await act({ op: 'CLICK', row: answer.row, el: snap.nodes.get(answer.row.id) }, hooks);
+      if (done.outcome.ok) overlay.trail(`${group.label}: ${answer.row.name}`);
+    } finally {
+      busy = false;
+      overlay.setMode('user');
+    }
+  }
+
+  async function command(text: string, heard: Trace['heard']): Promise<Trace | undefined> {
+    if (isStop(text)) { stop('said'); return undefined; }
+    if (question) { question.hear(text); return undefined; }
     if (pending) {
       const pick = pickOneOrTwo(text);
       if (pick !== undefined) return choose(pick, heard, text);
       pending = undefined; // anything else is a new command
       overlay.badges(undefined);
     }
-    if (busy) { overlay.showStatus(`“${text}” ignored: still working`, 'unsure'); return finish(undefined); }
+    if (busy) { overlay.showStatus(`“${text}” ignored: still working. Say stop to halt.`, 'unsure'); return undefined; }
+    const chip = narrow.find((g) => [g.key, `narrow by ${g.key}`, `by ${g.key}`].includes(normalise(text)));
+    if (chip) { void narrowBy(chip); return undefined; }
 
     const prepared = spec && normalise(spec.text) === normalise(text) ? spec.promise : undefined;
     const specMissed = !!spec && !prepared; // a decision was fired on an interim transcript that turned out different
@@ -97,21 +205,25 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
     overlay.setBusy(text);
     try {
       // Drive mode: the same loop as delegate mode, on a leash of one step.
-      const trace = await runLoop({ utterance: text, leash: 'single', maxSteps: 1, heard, prepared, specMissed, signal: abort.signal }, hooks);
-      if (trace.disambiguation) {
+      let trace = await runLoop({ utterance: text, leash: 'single', maxSteps: 1, heard, prepared, specMissed, signal: abort.signal }, hooks);
+      if (trace.result === 'task' && trace.resolution?.type === 'StartTask') trace = await runTask(trace.resolution.goal, heard);
+      else if (trace.disambiguation) {
         pending = trace.disambiguation;
         overlay.badges(pending.options.map((o) => o.el) as [Element, Element], (i) => void choose(i, { final: performance.now() }, `tap ${i + 1}`));
         getVoice().speak('One or two?');
-      }
-      finish(trace);
+      } else if (trace.result === 'acted') { overlay.narrow(undefined); narrow = []; }
+      return trace;
     } finally { busy = false; abort = undefined; }
   }
+
+  showMemory();
 
   return {
     stop,
     warm,
+    traces: () => traces,
     // The command bar does everything voice does.
-    typed: (text: string) => command(text, { final: performance.now() }),
+    typed: (text: string) => handle(text, { final: performance.now() }),
 
     onSpeechStart: warm,
 
@@ -119,18 +231,18 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
       overlay.showInterim(text);
       warm();
       if (swallowFinal) return;
-      if (isStop(text)) { swallowFinal = true; resetUtterance(); return stop('heard mid-sentence'); }
+      if (isStop(text)) { swallowFinal = true; interimText = ''; lastInterimAt = undefined; return stop('heard mid-sentence'); }
       if (normalise(text) === normalise(interimText)) return;
       interimText = text;
       lastInterimAt = performance.now();
       clearTimeout(stableTimer);
-      // Speculative decide: the transcript has stopped changing, so ask Jev now and keep the answer
-      // for the final transcript. "one" / "two" replies and busy periods need no model call.
+      // Speculative decide: the transcript has stopped changing, so ask Jev now and keep the answer for the
+      // final transcript. Not while the agent drives, a question is open, or the reply is "one" / "two".
       stableTimer = setTimeout(() => {
-        if (busy || (pending && pickOneOrTwo(text) !== undefined)) return;
+        if (busy || question || (pending && pickOneOrTwo(text) !== undefined)) return;
         spec?.controller.abort();
         const controller = new AbortController();
-        spec = { text, controller, promise: decideOnce(text, 'single', hooks, controller.signal) };
+        spec = { text, controller, promise: decideOnce({ utterance: text, leash: 'single', history: [] }, hooks, controller.signal) };
       }, INTERIM_STABLE_MS);
     },
 
@@ -139,9 +251,8 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
       clearTimeout(stableTimer);
       interimText = '';
       lastInterimAt = undefined;
-      if (swallowFinal) { swallowFinal = false; dropSpec(); return finish(undefined); }
-      if (!text.trim()) return finish(undefined);
-      void command(text, heard);
+      if (swallowFinal || !text.trim()) { swallowFinal = false; dropSpec(); waiters.splice(0).forEach((w) => w(undefined)); return; }
+      void handle(text, heard);
     },
 
     // Resolves with the trace of the next command that finishes. Used by the dev simulator.

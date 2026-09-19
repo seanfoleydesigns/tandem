@@ -59,7 +59,6 @@ export type Heads = {
   click_target?: Head; // a target head is left out when the page offers no candidate for it
   type_target?: Head;
   select_target?: Head;
-  ask_group?: Head; // task leash only (M3)
   typed_span?: Head; // single leash only
 };
 
@@ -72,6 +71,7 @@ export type DecideRequest = {
   history: ActionRecord[];
   pending?: { group: string };
   snapshot: Snapshot;
+  asked?: string[]; // group keys already asked or skipped in this task; they get no needs_* Noul
   labelStyle?: LabelStyle; // inspector override for A/B runs
 };
 
@@ -83,6 +83,8 @@ export type DecideResponse = {
   usage: JevUsage;
   labelStyle: LabelStyle;
   heads: Heads;
+  needs?: Record<string, number>; // task leash: group key -> personal × (1 − given): the user must supply its value
+  needsParts?: Record<string, { personal: number; given: number }>; // the two Nouls behind each needs value
 };
 
 export type HealthResponse =
@@ -94,3 +96,7 @@ export type ApiError = { ok: false; status?: number; error: string };
 // Fit check: which of these candidates could the utterance be referring to? One Noul each.
 export type FitsRequest = { utterance: string; rows: ElementRow[] };
 export type FitsResponse = { model: string; ms: number; usage: JevUsage; fits: Record<string, number> };
+
+// Answer matching: which option does the spoken answer mean? One Choice over the option names.
+export type MatchRequest = { group: string; options: string[]; answer: string };
+export type MatchResponse = { model: string; ms: number; usage: JevUsage; head: Head };

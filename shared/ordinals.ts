@@ -5,9 +5,11 @@ export type Box = { top: number; left: number; width: number; height: number };
 export type Viewport = { width: number; height: number; insetTop?: number }; // insetTop: sticky header
 export type Placement = 'visible' | 'above' | 'below';
 
-// On screen means at least half of the box is inside the viewport.
-export function placement(box: Box, vp: Viewport): Placement {
-  const top = vp.insetTop ?? 0;
+// On screen means at least half of the box is inside the viewport, measured with getBoundingClientRect.
+// `insetTop` is the strip a sticky or fixed header covers. It hides page content scrolled under it,
+// but not the header's own controls: pass `pinned` for an element inside that header.
+export function placement(box: Box, vp: Viewport, pinned = false): Placement {
+  const top = pinned ? 0 : vp.insetTop ?? 0;
   const area = box.width * box.height;
   if (area > 0) {
     const w = Math.max(0, Math.min(box.left + box.width, vp.width) - Math.max(box.left, 0));

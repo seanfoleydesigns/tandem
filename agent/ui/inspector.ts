@@ -35,7 +35,7 @@ export function renderInspector(trace: Trace | undefined, labelStyle: LabelStyle
     : 'not fired';
   const summary = `
     <table>
-      <tr><th>heard</th><td>${esc(trace.utterance)}</td></tr>
+      <tr><th>${trace.leash === 'task' ? `goal · step ${trace.step + 1}` : 'heard'}</th><td>${esc(trace.utterance)}</td></tr>
       <tr><th>result</th><td>${esc(trace.result)}${trace.resolution ? ` · ${esc(trace.resolution.type)}` : ''}</td></tr>
       <tr><th>policy</th><td>${esc(trace.note)}</td></tr>
       ${trace.winner ? `<tr><th>winning row</th><td>${esc(trace.winner)}</td></tr>` : ''}
@@ -58,7 +58,13 @@ export function renderInspector(trace: Trace | undefined, labelStyle: LabelStyle
   const heads = Object.entries(r.heads)
     .map(([name, head]) => headRow(name, head as Head, trace.result === 'acted' && used.has(name), trace.rowNames))
     .join('');
-  return `${title}${summary}
+  const needs = r.needs && Object.keys(r.needs).length
+    ? `<table><tr><th>group</th><th class="num">personal</th><th class="num">given by goal</th><th class="num">needs (ask at 0.70)</th></tr>${Object.entries(r.needs).sort((a, b) => b[1] - a[1]).map(([g, p]) => {
+      const parts = r.needsParts?.[g];
+      return `<tr><td>${esc(g)}</td><td class="num">${(parts?.personal ?? 0).toFixed(2)}</td><td class="num">${(parts?.given ?? 0).toFixed(2)}</td><td class="num">${p.toFixed(2)}</td></tr>`;
+    }).join('')}</table>`
+    : '';
+  return `${title}${summary}${needs}
     <table><tr><th>head</th><th>choice</th><th class="num">confidence</th><th class="num">top p</th><th>top three</th></tr>${heads}</table>
     <p>Shaded rows are the heads the policy read. The others were speculative. ${esc(NONE)} / ${esc(NO_SPAN)} mean nothing fits.</p>`;
 }
