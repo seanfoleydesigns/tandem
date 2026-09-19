@@ -25,6 +25,8 @@ const VARIANTS: Record<string, (g: string) => string> = {
   'A compound (as specified)': (g) => PRE + intro(g) + `A value for ${g} is essential for the results to be usable by this user (for example a size that must fit), and neither \`goal\`, \`constraints\` nor \`prefs\` determines it.`,
   'D personal fact': (g) => PRE + intro(g) + `${g} is a fact about the user that only the user knows and that the product must match, such as a size that must fit. It is not a matter of taste or budget.`,
   'D2 measurement': (g) => intro(g) + `${g} is a measurement of the person who will use the product, such as a shoe size or clothing size that must fit. It is not a preference such as colour, brand, style, material or price.`,
+  // M5, de-shopping: D2 without 'who will use the product'. This is the production wording now.
+  'D5 measurement of a person (M5)': (g) => intro(g) + `${g} is a measurement of a person, such as a shoe size or clothing size that must fit them. It is not a preference such as colour, brand, style, material or price.`,
   'D3 only the user knows': (g) => intro(g) + `Only the user can know the right ${g} for themselves, and a product with the wrong ${g} could not be used by them. Examples: shoe size, clothing size, ring size. Counter-examples: colour, brand, style, closure, price.`,
   'D4 question': (g) => intro(g) + `Is ${g} a measurement of the user's own body, such as a size that must fit?`,
   'E determined by goal': (g) => PRE + intro(g) + `\`goal\` states which ${g} the user wants.`,

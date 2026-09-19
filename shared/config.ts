@@ -22,6 +22,9 @@ export const DICTATION_MIN = 0.6; // DICTATION has a floor too: below it the utt
 // Asking. One needs_* Noul per unset control group rides on every task-leash decide request.
 // A group is asked about when its Noul reaches this and it has not been asked or skipped in this task.
 export const ASK_MIN = 0.7;
+export const DISMISS_MIN = 0.6; // refuses × (1 − accepts): probed refusals and closes 0.74 to 0.85, everything else 0.48 or less
+export const MAX_DISMISSALS = 3; // attempts per task, or per drive command
+export const MAX_BLOCKER_CONTROLS = 6; // each one costs a small Jev request, sent in parallel
 export const MAX_UNCLEAR = 2; // unclear answers to one question before handing back
 export const SAVE_MIN = 0.7; // a "Narrow by" answer is saved only when the group's personal Noul reaches this
 

@@ -2,6 +2,7 @@
 import { MAX_ROWS } from '../shared/config';
 import { describeOrdinals, placement, type Placement, type Viewport } from '../shared/ordinals';
 import type { ElementRow, Snapshot } from '../shared/types';
+import { composedClosest, composedContains, composedParent, deepQueryAll } from './dom';
 import { accessibleName, groupOf, roleOf } from './name';
 
 const INTERACTIVE =
@@ -13,7 +14,8 @@ const ORDINAL_ROLES = new Set(['link', 'button', 'tab', 'menuitem', 'option']);
 const MIN_COLLECTION = 3;
 
 // `options` maps a select label such as e12_o3 to its <option>, so a label is only ever looked up.
-export type Snap = { snapshot: Snapshot; nodes: Map<string, Element>; options: Map<string, HTMLOptionElement>; ms: number };
+// `modal` is the open modal the snapshot was scoped to, if any.
+export type Snap = { snapshot: Snapshot; nodes: Map<string, Element>; options: Map<string, HTMLOptionElement>; ms: number; modal?: Element };
 
 let nextId = 1; // ids are never reused across snapshots
 
@@ -21,7 +23,7 @@ const clean = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').t
 
 function isUsable(el: Element): boolean {
   if ((el as HTMLButtonElement).disabled || el.getAttribute('aria-disabled') === 'true') return false;
-  if (el.closest('[inert],[aria-hidden="true"]')) return false;
+  if (composedClosest(el, '[inert],[aria-hidden="true"]')) return false;
   return (el as HTMLElement).checkVisibility?.({ visibilityProperty: true }) ?? true;
 }
 
@@ -60,32 +62,47 @@ function stateOf(el: Element, role: string): string | undefined {
   return parts.length ? parts.join(', ') : undefined;
 }
 
+// The modal that is open right now: a native <dialog> shown with showModal(), or an ARIA modal that is really
+// showing (sites leave stale aria-modal attributes on hidden containers). Never the agent's own overlay.
+export function openModal(overlay: Element): Element | undefined {
+  const isModal = (d: Element) => { try { return d.matches(':modal'); } catch { return false; } }; // jsdom does not know :modal
+  const showing = (el: Element) => {
+    const r = el.getBoundingClientRect();
+    return ((el as HTMLElement).checkVisibility?.({ visibilityProperty: true }) ?? true) && r.width > 0 && r.height > 0;
+  };
+  return deepQueryAll(document, 'dialog[open]', overlay).find(isModal)
+    ?? deepQueryAll(document, '[aria-modal="true"]', overlay).reverse().find(showing);
+}
+
 type Item = { el: Element; role: string; place: Placement; top: number; bottom: number; group?: string; ordinal?: string };
 
 // `wide` keeps rows wherever they are on the page, for housekeeping that must see every filter.
-export function takeSnapshot(opts: { overlay: Element; focused?: Element | null; wide?: boolean }): Snap {
+// `within` reads one element only: a pop-up's or banner's own controls.
+export function takeSnapshot(opts: { overlay: Element; focused?: Element | null; wide?: boolean; within?: Element }): Snap {
   const started = performance.now();
   const bar = topBar(opts.overlay);
   const vp: Viewport = { width: window.innerWidth, height: window.innerHeight, insetTop: bar.bottom };
-  const modal = Array.from(document.querySelectorAll('dialog[open]')).find((d) => d.matches(':modal'));
-  const scope: ParentNode = modal ?? document;
+  // Open shadow roots (web components) are walked too; closed ones cannot be seen. The overlay is skipped.
+  const all = (root: ParentNode, selector: string) => deepQueryAll(root, selector, opts.overlay);
+  const modal = openModal(opts.overlay);
+  const scope: ParentNode = opts.within ?? modal ?? document;
 
   // Every usable interactive element, in reading order. Collections need the ones far off screen too.
   const items: Item[] = [];
-  scope.querySelectorAll(INTERACTIVE).forEach((el) => {
+  all(scope, INTERACTIVE).forEach((el) => {
     if (!isUsable(el)) return;
     const r = el.getBoundingClientRect();
     if (r.width === 0 && r.height === 0) return;
     // Controls inside the sticky bar are on screen; only content scrolled under it is hidden.
-    items.push({ el, role: roleOf(el), place: placement(r, vp, !!bar.el?.contains(el)), top: r.top, bottom: r.bottom });
+    items.push({ el, role: roleOf(el), place: placement(r, vp, !!bar.el && composedContains(bar.el, el)), top: r.top, bottom: r.bottom });
   });
 
   // Ordinals for repeated siblings, inside the main content when the page marks it.
-  const main = document.querySelector('main,[role=main]');
+  const main = all(document, 'main,[role=main]')[0];
   const collections = new Map<Element, Map<string, Item[]>>();
   for (const item of items) {
-    if (!ORDINAL_ROLES.has(item.role) || (main && !main.contains(item.el))) continue;
-    const container = item.el.closest('li')?.parentElement ?? item.el.parentElement;
+    if (!ORDINAL_ROLES.has(item.role) || (main && !composedContains(main, item.el))) continue;
+    const container = composedClosest(item.el, 'li')?.parentElement ?? composedParent(item.el); // cards may be components
     if (!container) continue;
     const byRole = collections.get(container) ?? new Map<string, Item[]>();
     collections.set(container, byRole);
@@ -130,11 +147,11 @@ export function takeSnapshot(opts: { overlay: Element; focused?: Element | null;
   });
 
   const visible = (el: Element) => (el as HTMLElement).checkVisibility?.() ?? true;
-  const headings = Array.from(scope.querySelectorAll('h1,h2,h3'))
+  const headings = all(scope, 'h1,h2,h3')
     .filter(visible).map((h) => clean(h.textContent).slice(0, 80)).filter(Boolean).slice(0, 10);
-  const notices = Array.from(scope.querySelectorAll('[role=status],[role=alert],[aria-live]:not([aria-live=off])'))
+  const notices = all(scope, '[role=status],[role=alert],[aria-live]:not([aria-live=off])')
     .filter(visible).map((n) => clean(n.textContent).slice(0, 120)).filter(Boolean).slice(0, 8);
-  if (modal) notices.unshift(`Dialog open: ${clean(modal.querySelector('h1,h2,h3')?.textContent) || 'untitled'}`);
+  if (modal && !opts.within) notices.unshift(`Dialog open: ${clean(modal.querySelector('h1,h2,h3')?.textContent) || 'untitled'}`);
 
   const snapshot: Snapshot = {
     url: location.pathname + location.search,
@@ -142,5 +159,5 @@ export function takeSnapshot(opts: { overlay: Element; focused?: Element | null;
     headings, notices, rows,
     ...(focused ? { focused } : {}),
   };
-  return { snapshot, nodes, options, ms: Math.round((performance.now() - started) * 10) / 10 };
+  return { snapshot, nodes, options, ms: Math.round((performance.now() - started) * 10) / 10, ...(modal ? { modal } : {}) };
 }

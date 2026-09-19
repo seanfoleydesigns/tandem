@@ -1,6 +1,7 @@
 // The overlay: mounted in a shadow root, excluded from snapshots, never blocking the page.
 // One capsule at the bottom centre. It names the state in words, widens for the live transcript, and
 // morphs into the question card and back. State is never colour-only: an aria-live region says it too.
+import { deepActiveElement } from '../dom';
 import { LABEL_STYLE, type LabelStyle } from '../../shared/config';
 import type { Preference } from '../../shared/types';
 import type { Trace } from '../loop';
@@ -146,8 +147,8 @@ export function mountOverlay(events: OverlayEvents, opts: { parent?: HTMLElement
   // The words are also the command field: click them, or press "/", and type.
   $('.words').addEventListener('click', () => cmd.focus());
   cmd.addEventListener('focus', () => {
-    const active = document.activeElement;
-    pageFocus = active && active !== host && active !== document.body ? active : null;
+    const active = document.activeElement === host ? null : deepActiveElement(); // a field inside a web component counts
+    pageFocus = active && active !== document.body ? active : null;
     capsule.classList.add('typing', 'wide');
     events.onTyping();
   });
@@ -229,8 +230,8 @@ export function mountOverlay(events: OverlayEvents, opts: { parent?: HTMLElement
     labelStyle: () => labelStyle,
     // The field the user is in: the page's own focus, or what had focus before the command field took it.
     pageFocus() {
-      const active = document.activeElement;
-      if (active && active !== host && active !== document.body) return active;
+      const active = document.activeElement === host ? null : deepActiveElement();
+      if (active && active !== document.body) return active;
       return pageFocus?.isConnected ? pageFocus : null;
     },
     // The ring hugs the element: its own corner radius plus 4px. It scales from 1.06 to 1 and fades over 600 ms.

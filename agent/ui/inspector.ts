@@ -8,6 +8,14 @@ const esc = (s: unknown) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;',
 const ms = (a?: number, b?: number) => (a === undefined || b === undefined ? '–' : `${Math.round(b - a)} ms`);
 
 // LLM latency and tokens, shown next to Jev's.
+// A pop-up or banner was in the way: what it was, what code removed, who chose, and how sure Jev was.
+const blockerCell = (b: NonNullable<Trace['blocker']>) => [
+  `${b.kind}${b.title ? ` "${b.title}"` : ''}`, b.trigger === 'covered' ? 'covered the target' : 'a modal was open',
+  `${b.offered.length} offered${b.removed.length ? `, ${b.removed.length} removed in code (${b.removed.join(', ')})` : ''}`,
+  b.scores ? `Jev ${b.ms} ms: ${b.scores.map((c) => `${c.name} ${c.dismisses.toFixed(2)} (refuses ${c.refuses.toFixed(2)}, accepts ${c.accepts.toFixed(2)})`).join('; ')}` : '',
+  b.note, b.dismissed ? 'dismissed' : 'left in place',
+].filter(Boolean).join(' · ');
+
 const llmCell = (c: LlmCall) => (c.ok ? `${c.ms} ms · ${c.input_tokens} in / ${c.output_tokens} out · ${esc(c.model ?? '')}` : `unavailable (${esc(c.error ?? 'no answer')}) · ${c.ms} ms`);
 
 const HEAD_FOR_OP: Record<string, string[]> = {
@@ -44,6 +52,7 @@ export function renderInspector(trace: Trace | undefined, labelStyle: LabelStyle
       ${trace.winner ? `<tr><th>winning row</th><td>${esc(trace.winner)}</td></tr>` : ''}
       ${trace.disambiguation ? `<tr><th>one or two</th><td>${trace.disambiguation.options.map((o, i) => `${i + 1}: ${esc(o.line)}`).join('<br>')}</td></tr>` : ''}
       ${trace.fit ? `<tr><th>fit check</th><td>${trace.fit.asked} candidates asked, ${trace.fit.ms} ms, ${trace.fit.fits.length ? 'fit: ' + trace.fit.fits.map((f) => `${esc(f.line.split(' · ')[1] ?? f.line)} ${f.noul.toFixed(2)}`).join(', ') : 'none fit'}</td></tr>` : ''}
+      ${trace.blocker ? `<tr><th>blocker</th><td>${esc(blockerCell(trace.blocker))}</td></tr>` : ''}
       <tr><th>model</th><td>${esc(r?.model ?? '–')} · label style ${esc(r?.labelStyle ?? labelStyle)} · ${trace.rows} rows · ${r ? `${r.usage.input_tokens} tokens in` : ''}</td></tr>
     </table>
     <table>

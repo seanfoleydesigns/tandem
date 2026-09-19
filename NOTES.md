@@ -357,3 +357,83 @@ Started 15:22, finished 15:32 EDT (about 10 min). No behaviour changes: `agent/u
 - Constraints live in memory. A full page load forgets them, and the dimming with them (the demo store navigates without reloading).
 - With the LLM away there is no spoken summary; code has the counts and could say them, but that was not asked for.
 - `mentionsPrice` is a plain pattern. "check the under 75 price filter" goes to the task path too (code then selects "Under $75" because it matches exactly), which is right but slower than a drive-mode click.
+
+## 2026-09-19 · M5, steps 1 and 2: de-shop the core, open shadow roots, blockers
+
+**Start 16:23 · End of step 2 17:14** (M5 continues: the Chrome extension and the real-site trial follow.)
+
+Sean redefined M5: take the same agent to the real web through a Chrome extension. The old stretch list (vision pass) is dropped. The store demo must keep working exactly as it does. Sean asked for workflows on this milestone, so two ran: a read-only audit and design pass (4 agents: wording in `questions.ts`, prompts and the `Constraints` ripple, shadow DOM, blockers) while I built the gym and took the baselines, and an adversarial review of the finished diff (findings at the end of this entry).
+
+**How the scores were compared.** The two older probes hard-code their wording, so re-running them re-measures old sentences. New: `scripts/probe-heads.ts` sends fixed requests through the real routes of the running server (`/api/decide` on both leashes, `/api/slate`, `/api/fits`, `/api/match`), saves all 264 scores, and diffs two files. Two identical runs already differ on 4 scores (noise floor: a typed_span confidence by 0.10, one operation by 0.14, and "task white set" flips between DONE and CLICK at about 0.5), so a move counts only when it shows against both baseline runs.
+
+**Step 1 · De-shop the core**
+
+- *Jev wording, seven sentences.* "kind of product" became "kind of item (for example, on a shop, the kind of product)" in the task-leash CLICK and DONE criteria; the click_target rule became "a single result in a list, for example a single product on a shop … or names that exact result" (without that escape "find the article on Alan Turing" would never open a search result); the `personal` Noul lost "who will use the product"; `refines` and `names_product` were reworded. Kept as they were, on the auditor's advice: the kind question, both fit questions, the match question, the `handled_by_code` sentence, and "it is not a preference such as colour, brand, style, material or price", which holds the non-size groups at 0.02 to 0.03.
+- *LLM prompts.* "a shopper … a shop page" became "a user … the web page they are on; the page may be any kind of site". Verify no longer treats "no results" as a failure when the goal was to reach one page, and says what is open instead of forcing a count. `search_query` now covers "names a specific thing to find that the page does not already list".
+- *`Constraints` is generic:* `{ search_query?, attributes?, max_price?, min_price?, visual_prefs?[] }`. Category and colour are attributes. `shared/constraints.ts` holds the three pure pieces: pairs to record, key-by-key merge for a refinement ("make them black" keeps the category), and the flat form Jev reads, so Jev's state has the same shape it had in M4.
+
+**Scores that moved by more than 0.1** (against both baseline runs):
+
+| Score | Before | After | Decision changed? |
+|---|---|---|---|
+| slate "show me the arco ones in white" · names product | 0.68 | 0.41 | No. Still a refinement; the margin under *refines* (0.75) grew from 0.06 to 0.34 |
+| slate "only the ones under a hundred and fifty" · names product | 0.18 | 0.35 | No. *refines* is 0.90 |
+
+Nothing else moved beyond the noise floor: every kind, operation and target head, the needs Nouls (the reworded `personal` sentence, added to `probe-needs.ts` as D5, is within 0.02 of the old one on every group and goal), fits and match. One consistent non-score change: on a fixture where the operation is DONE, the unused click_target head names `none` where it used to name "Under $75".
+
+**What broke in step 1**
+
+- **The first neutral `names_product` flipped a refinement into a new search.** "names a kind of item to look for" is broader than "kind of product": "show me the arco ones in white" rose from 0.68 to 0.84, above its *refines* score of 0.75, which would have cleared filters. Fixed in the wording, not the threshold. Four variants probed (`probe-slate.ts`, R3b to R3d); the winner asks for a NOUN: "`goal` contains a noun for the kind of thing to look for (on a shop, a kind of product…; on a news site, a kind of story). A brand, a colour, a price or a word such as "ones" is not such a noun." New searches 0.75 to 0.90, refinements 0.30 to 0.50, "find the notification settings" 0.27, "show me the newest stories about rust" 0.85. It separates better than the shop wording did ("the leather ones" 0.62 before, 0.44 now).
+- **A free-form record cannot go into a structured-output schema, and it fails silently.** The SDK forces `additionalProperties: false` on every object, so `z.record` becomes an object with no properties: the model could only ever answer `{}`, which still validates. The auditor found this by running `zodOutputFormat` locally. The LLM now returns `{name, value}` pairs.
+- A new schema pays a one-time compile: the first parse took 3.9 s against the 4 s timeout, then about 1 s. I warmed it before the acceptance run.
+- jsdom gets `:scope > legend` wrong inside a shadow root (the group came back as the page heading). The legend is now found among the fieldset's children, which means the same thing.
+
+**Open shadow roots.** `agent/dom.ts`: deep query in reading order (never into the agent's own overlay), composed parent / closest / contains, deep hit-testing, deep active element, id lookup in the element's own root. The design agent caught what my first pass missed: the heading lookup compared document positions across trees, which is arbitrary (now one tree at a time, with the host standing in for the element); synthetic `input` and Enter events were not `composed`; collections, `main` and the search-field check still stopped at the boundary. A page without shadow roots takes the plain `querySelectorAll` path. `tests/shadow.test.ts` (11 cases) uses small custom elements: controls, a `<slot>` name, a nested component, component cards in a list (ordinals, group from the heading outside), `aria-labelledby` scoped to the root, focus inside a root, a click that resolves through the host, a covered target still refused, a closed root never seen, the overlay never read.
+
+**Step 2 · Blockers**
+
+- `?gym=hard` did not exist; built it as the spec describes (`store/src/gym.ts`): cookie banner, newsletter `<dialog>` after five seconds with "Subscribe and save" and "No thanks, I'd rather pay full price" and no close button, Size and Closure behind "More filters", the sort as a custom listbox. Easy mode renders the same markup as before.
+- Code removes what may never be pressed (accept, agree, allow, subscribe, sign up, join, register, buy, and the deny-list) unless a refusing word comes first or the name keeps only what is necessary. An exact plain refusal or close is taken in code. The rest goes to Jev.
+
+**Jev on blockers, three attempts**
+
+1. One Choice over the controls, with a long instruction listing what qualifies and what does not. It named the right control every time but without conviction: confidence 0.47 to 0.74, with 0.17 to 0.39 on `none`, and it refused a lone guilt-trip link outright (`none` 0.52). Same lesson as the needs Noul in M3: a compound with negatives scores poorly.
+2. Two literal Nouls per control, *refuses* and *accepts*, combined in code as refuses × (1 − accepts). Probed with the control as a state key: every refusal or close 0.74 to 0.85 ("No thanks, I'd rather pay full price" 0.81, "Close" 0.81, "Continue without accepting" 0.78), everything else 0.48 or less ("Got it" 0.04, "Manage preferences" 0.09, "(no name)" 0.27).
+3. The same two Nouls in ONE request for all controls, with each control's name written into its instruction: every score sank to between 0.2 and 0.36. **The thing being judged has to be a state key, not part of the instruction.** So it is one small request per control, sent in parallel (150 to 380 ms for the lot, 6 controls at most). Through the real route: 10 of 11 fixtures as wanted at `DISMISS_MIN` 0.6. The miss is "Use necessary cookies only" at 0.37 (Jev reads "use … cookies" as accepting something), which is one of the exact names code takes before Jev is asked.
+
+**Acceptance, `?gym=hard`, by simulator**
+
+| Check | Result |
+|---|---|
+| Pop-up open at task start, "find me white sneakers" | Pass. "Dismissed a pop-up", "Checked White", "Opened Sneakers", done. |
+| Pop-up arrives mid-task (priced hero started at 3 s) | Pass. It landed between the snapshot and the click, so the covered check caught it: Subscribe removed in code, Jev scored the refusal 0.87 (refuses 0.93, accepts 0.06) in 178 ms, the click was retried, done in 3.3 s with a correct summary. |
+| Drive mode, pop-up open, "check white" | Failed at first: Jev was only unsure (operation 0.40), not "not found", so my retry condition missed it. Now any ignore except "not for me" dismisses and looks once more. "Dismissed a pop-up", "Checked White", 1.4 s. |
+| Cookie banner covers "Load more" | First run: the banner only half-covered the button, its centre was clear, and the click went through with no dismissal, which is correct. With the banner as tall as real ones: "Closed the cookie banner" ("Necessary only", chosen in code, no model call), "Pressed Load more", 0.6 s. |
+| "Subscribe and save", "Accept all" | Never pressed, never shown to Jev. |
+
+Not passing in hard mode, and left alone: the saved size is not applied, because Size sits behind "More filters" and the agent only uses groups it can see; and code cannot sort cheapest-first, because the sort is a custom listbox rather than a `<select>`.
+
+**Store acceptance re-run, easy mode, after all of the above: all pass.** M3: hero run 1 asks "Which size?" with the page's chips, "ten and a half" is saved as 10.5; run 2 ("find me black boots") keeps the saved size and never asks; the clean slate case (Running + Grey, Brown, Arco, 10.5) clears 3 old filters, keeps the size, checks White, opens Sneakers, DONE 0.98, three times out of three; "open a product, pick a size and then add to cart" done in 4.1 s; a task in the cart hands back "This one's yours"; "click checkout" in drive mode asks "Click Checkout?" and "no" leaves it alone; Esc stops a task; an impossible command says "I can't find that on this page." M4: the priced hero ends on Sneakers, White, 10.5, sorted, one card dimmed "Over $100", "Four white sneakers in your size, three under a hundred dollars."; the refinement keeps `{ category, colour }` and nothing is dimmed at 150. Drive mode: six commands, all speculative hits, final to action 1 to 4 ms, Jev 167 to 241 ms, and only `/api/warm` and `/api/decide` were called.
+
+**The adversarial review** (3 finders by dimension, one sceptic per finding, 17 agents): 14 findings, all 14 confirmed, none refuted, all fixed before the commit, each with a test.
+
+- *Safety.* `declines()` only compared word positions, so inside a pop-up "No thanks, continue to checkout", "Skip to checkout" and "Don't wait - Buy now" lost the deny-list, and "Close and accept" or "Dismiss and subscribe" were not removed before Jev. A refusal is now recognised by its shape (the guilt trip in the first person, or necessary-only), which fails towards asking. The exemption reached any fixed or sticky box, including the store's own sticky header; it now reaches dialogs and cookie boxes only. A link named "X" was pressed as a close button. Hidden text inside a pop-up reached Jev through `textContent`; it is `innerText` now, and `control` is declared page content too (re-probed: still 10 of 11).
+- *Correctness.* A web app's fixed shell was taken for the blocker, so a page button named "Decline" could be pressed in code: a blocker never contains its target. The drive-mode second look was skipped when the fit check gave up first, and it could fire on background speech weakly classed as not-for-me and close a dialog the user had opened on purpose. The retried click could land after "stop". A timer pop-up that appeared during an action's settle was adopted as part of the flow and never dismissed. The inspector lost the blocker row on the drive retry. A snapshot scoped to a component did not enter the component's own shadow root or follow its slots, so a web-component cookie banner had no controls.
+- *Store and constraints.* Hard mode stuck to the tab after a plain reload of "/", which would have run the easy-mode acceptance against the wrong shop; it is decided once per document now. The price guard missed "max_price"-style attribute names, and an attribute could shadow a Constraints field once flattened. "White or black" lost its second value; repeated values are joined.
+
+**One more, mine:** on the last easy-mode pass the summary for the unpriced hero said "all under a hundred dollars" (one shoe is $110). The model had echoed the shop example in the verify prompt. The prompt now says to mention a price only when the constraints have one, with an example of each kind, and code drops a summary that mentions a price when the goal set none.
+
+**Found on the way, not caused by M5.** From "Running + Grey + 10.5" (one old filter, not three) the task clears Grey, checks White and then says DONE at 0.89 while still on Running. I put the old M4 sentences back to check: same result, 0.89 to 0.90. The page state is identical to the passing case; only the history line differs ("cleared 1 old filters" against "cleared 3"). Recorded as a known weak spot, not fixed here.
+
+**Surprises**
+
+- Chrome delivers a dialog's `close` event with the next frame, so in a background tab it never arrives. The gym pop-up now cleans up on submit and on Esc instead. My test pane is a background tab, which is also why an emulated viewport is needed for every browser check.
+- The first time the covered path ran for real it was not the case I had built it for: the pop-up appeared between the snapshot and the click.
+
+**Known limits after steps 1 and 2** (they go into the README with step 4)
+
+- Closed shadow roots and iframes are invisible. Group labels follow ancestors through the host, not through slots.
+- A banner whose only control is "OK" or "Got it" stays, because pressing it usually means consent. An icon-only close button with no accessible name cannot be judged.
+- A native modal makes the rest of the page inert, including the agent's own capsule: it cannot be clicked while a page's modal is open. Voice still works.
+- The task leash cannot type. `search_query` is parsed but nothing uses it yet, so "find the article about Alan Turing" can only click. This will dominate the real-site trial; proposed for the next step: TYPE on the task leash, with the text from `search_query` (written by the LLM at the edge, never by Jev) and the criterion left out when there is no query, so the store's questions stay word for word the same.
+- The clean slate is still only proven on the shop. With the noun wording a settings request scores 0.27, so it does nothing there, which is the safe direction.

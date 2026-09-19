@@ -83,3 +83,19 @@ dialog::backdrop { background: rgb(0 0 0 / 0.4); }
 @media (max-width: 760px) {
   .listing, .product { grid-template-columns: 1fr; }
 }
+
+/* ?gym=hard */
+.cookie-banner { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; background: var(--ink); color: #fff; padding: 1.1rem 1.25rem 5.5rem; display: flex; flex-wrap: wrap; gap: 0.75rem 2rem; align-items: center; box-shadow: 0 -6px 24px rgb(0 0 0 / 0.25); }
+.cookie-banner { min-height: 300px; align-content: start; }
+.cookie-banner p { margin: 0; flex: 1 1 100%; max-width: 760px; }
+.cookie-small { font-size: 0.85rem; opacity: 0.8; }
+.cookie-actions { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+.cookie-banner a { color: #fff; }
+#newsletter { max-width: 420px; text-align: center; }
+.newsletter-form { display: grid; gap: 0.6rem; text-align: left; }
+.newsletter-form input { padding: 0.5rem 0.7rem; border: 1px solid var(--line); border-radius: 6px; }
+button.linklike { border: 0; background: none; text-decoration: underline; color: var(--muted); font-size: 0.9rem; }
+.sortbox { position: relative; }
+#sort-list { position: absolute; right: 0; top: calc(100% + 4px); z-index: 4; list-style: none; margin: 0; padding: 0.3rem; min-width: 12rem; background: var(--card); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgb(0 0 0 / 0.12); }
+#sort-list [role=option] { padding: 0.4rem 0.6rem; border-radius: 5px; cursor: pointer; }
+#sort-list [role=option]:hover, #sort-list [aria-selected=true] { background: var(--paper); }

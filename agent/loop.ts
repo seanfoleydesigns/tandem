@@ -1,11 +1,13 @@
 // The one loop. Drive and delegate differ only by the leash: maxSteps 1 versus 25.
 // snapshot → (task: saved preferences, in code) → /api/decide → policy.resolve → execute → settle → record.
+import { newBudget, type Budget } from '../shared/blockers';
 import { candidates, groupsByLabel, rowLine, type Candidates } from '../shared/candidates';
 import { MAX_TASK_MS, type LabelStyle } from '../shared/config';
+import { mergeConstraints } from '../shared/constraints';
 import { fitPool, rankFits } from '../shared/fits';
 import { pageDigest } from '../shared/digest';
 import { cleanLabel, controlGroups, isChosen, isNeutral, labelKey, unsetGroups, type ControlGroup } from '../shared/groups';
-import { denied, resolve, type Resolution, type Why } from '../shared/policy';
+import { declines, denied, resolve, type Resolution, type Why } from '../shared/policy';
 import { countResults, exactOption, parseRange, priceGroup, priceLimit, sortAscending, wanted, withoutPriceGroup } from '../shared/price';
 import { planSlate, setOptions } from '../shared/slate';
 import { normalise } from '../shared/speech';
@@ -13,8 +15,9 @@ import type {
   ActionRecord, ApiError, Constraints, DecideRequest, DecideResponse, ElementRow, FitsResponse, Leash, LlmCall, Operation,
   ParseResponse, Preference, SlateResponse, VerifyRequest, VerifyResponse,
 } from '../shared/types';
+import { clearBlocker, inPopup, type BlockerTrace } from './blockers';
 import * as exec from './execute';
-import { takeSnapshot, type Snap } from './snapshot';
+import { openModal, takeSnapshot, type Snap } from './snapshot';
 
 // When the words were heard. `final` is the final transcript (or Enter in the command bar);
 // `lastInterim` is the last time the interim transcript changed, when there was one.
@@ -58,6 +61,7 @@ export type Trace = {
   constraints?: Constraints; // task leash: what the LLM parsed from the goal (M4)
   llm?: { parse?: LlmCall; verify?: LlmCall }; // LLM latency and tokens, next to Jev's
   verdict?: { ok: boolean; issues: string[]; spoken: string };
+  blocker?: BlockerTrace; // a pop-up or banner was in the way, and what was done about it
   rowNames: Map<string, string>;
   result: 'acted' | 'ignored' | 'asked' | 'confirm' | 'task' | 'done' | 'stuck' | 'yours' | 'stopped' | 'failed' | 'error';
   note: string;
@@ -84,6 +88,7 @@ export type LoopHooks = {
   onThinking: (on: boolean, llmAnswered?: boolean) => void;
   lastConstraints: () => Constraints;
   setConstraints: (c: Constraints) => void;
+  blockers?: { budget: Budget; signal?: AbortSignal }; // set by runLoop: dismissal attempts left in this task or command
 };
 
 const driveHistory: ActionRecord[] = [];
@@ -135,19 +140,27 @@ async function fitCheck(utterance: string, rows: ElementRow[], leash: Leash, sig
 // Carry out one chosen operation on one element, then wait for the page to settle.
 export async function act(
   action: { op: Operation; row?: ElementRow; el?: Element; option?: HTMLOptionElement; text?: string; append?: boolean; usedPref?: string },
-  hooks: Pick<LoopHooks, 'overlay' | 'onRing'>, history: ActionRecord[] = driveHistory,
-): Promise<{ outcome: exec.ExecResult; t3: number; settleMs: number }> {
-  const before = { url: location.href, scrollY: window.scrollY };
+  hooks: Pick<LoopHooks, 'overlay' | 'onRing'> & Partial<Pick<LoopHooks, 'onTrail' | 'blockers'>>, history: ActionRecord[] = driveHistory,
+): Promise<{ outcome: exec.ExecResult; t3: number; settleMs: number; blocker?: BlockerTrace }> {
+  let before = { url: location.href, scrollY: window.scrollY };
   const { op, el } = action;
-  let outcome: exec.ExecResult;
-  if (op === 'SCROLL_DOWN') outcome = exec.scroll(1);
-  else if (op === 'SCROLL_UP') outcome = exec.scroll(-1);
-  else if (op === 'GO_BACK') outcome = exec.back();
-  else if (!el) outcome = { ok: false, reason: 'the chosen label is not in this snapshot' };
-  else if (op === 'CLICK') outcome = exec.click(el, hooks.overlay, hooks.onRing);
-  else if (op === 'TYPE') outcome = exec.type(el, action.text ?? '', hooks.overlay, hooks.onRing, { append: action.append, submit: !action.append });
-  else if (op === 'SELECT') outcome = exec.select(el, action.option, hooks.overlay, hooks.onRing);
-  else outcome = { ok: false, reason: `nothing to execute for ${op}` };
+  const perform = (): exec.ExecResult => {
+    if (op === 'SCROLL_DOWN') return exec.scroll(1);
+    if (op === 'SCROLL_UP') return exec.scroll(-1);
+    if (op === 'GO_BACK') return exec.back();
+    if (!el) return { ok: false, reason: 'the chosen label is not in this snapshot' };
+    if (op === 'CLICK') return exec.click(el, hooks.overlay, hooks.onRing);
+    if (op === 'TYPE') return exec.type(el, action.text ?? '', hooks.overlay, hooks.onRing, { append: action.append, submit: !action.append });
+    if (op === 'SELECT') return exec.select(el, action.option, hooks.overlay, hooks.onRing);
+    return { ok: false, reason: `nothing to execute for ${op}` };
+  };
+  let outcome = perform();
+  // Something covers the target. If it is a pop-up or banner, get it out of the way and try the same action once more.
+  let blocker: BlockerTrace | undefined;
+  if (!outcome.ok && outcome.coveredBy) {
+    blocker = await clearBlocker({ cover: outcome.coveredBy, target: el }, hooks, hooks.blockers?.budget ?? newBudget());
+    if (blocker?.dismissed && !hooks.blockers?.signal?.aborted) { before = { url: location.href, scrollY: window.scrollY }; outcome = perform(); }
+  }
   const t3 = performance.now();
 
   const settled = await exec.settle(hooks.overlay, before);
@@ -155,7 +168,7 @@ export async function act(
     op, target: action.row?.name || describeTarget(action.row), value: action.text ?? action.option?.label, usedPref: action.usedPref,
     outcome: !outcome.ok ? 'failed' : settled.changed ? 'changed' : 'no_change', ts: Date.now(),
   });
-  return { outcome, t3, settleMs: settled.ms };
+  return { outcome, t3, settleMs: settled.ms, blocker };
 }
 
 const VERB: Partial<Record<Operation, string>> = { SCROLL_DOWN: 'Scrolled down', SCROLL_UP: 'Scrolled up', GO_BACK: 'Went back' };
@@ -179,8 +192,10 @@ export const confirmationFor = trailText;
 
 export async function runLoop(
   input: { utterance?: string; goal?: string; leash: Leash; maxSteps: number; heard: Heard; prepared?: Promise<Decision>; specMissed?: boolean; signal?: AbortSignal },
-  hooks: LoopHooks,
+  base: LoopHooks,
 ): Promise<Trace> {
+  const hooks: LoopHooks = { ...base, blockers: { budget: newBudget(), signal: input.signal } };
+  const budget = hooks.blockers!.budget;
   const task = input.leash === 'task';
   const said = input.utterance ?? input.goal ?? '';
   const history: ActionRecord[] = task ? [] : driveHistory; // loop detection looks at this task only
@@ -196,7 +211,13 @@ export async function runLoop(
   let constraints: Constraints = {};
   let llm: Trace['llm'];
   let cleared = 0;
+  let startBlocker: BlockerTrace | undefined;
+  let flowModal: Element | undefined; // a modal the task's own action opened is part of the flow, not a blocker
+  let retried = false; // drive mode: one second look after a pop-up was dismissed
   if (task) {
+    // A modal open at task start is dismissed first: the clean slate and the parse must read the real page.
+    const modal = openModal(hooks.overlay);
+    if (modal) startBlocker = await clearBlocker({ modal }, hooks, budget);
     hooks.onThinking(true);
     const [slate, parsed] = await Promise.all([
       cleanSlate(input.goal ?? '', hooks, history, input.signal),
@@ -206,7 +227,7 @@ export async function runLoop(
     // With the LLM away (no key, a timeout), code reads the price limit itself, so a price never falls to Jev.
     const stated = parsed?.llm.ok ? parsed.constraints : priceLimit(input.goal ?? '') ?? {};
     // A refinement adjusts the last search, so it keeps the constraints it does not restate.
-    constraints = slate.refinement ? { ...hooks.lastConstraints(), ...stated } : stated;
+    constraints = slate.refinement ? mergeConstraints(hooks.lastConstraints(), stated) : stated;
     llm = { parse: parsed?.llm };
     hooks.setConstraints(constraints);
     hooks.onThinking(false, !!parsed?.llm.ok);
@@ -220,8 +241,17 @@ export async function runLoop(
       utterance: said, leash: input.leash, step, heard: input.heard, speculative: 'none', rows: snap.snapshot.rows.length,
       snapshotMs: snap.ms, t1: performance.now(), t2: performance.now(), rowNames: new Map(), result: 'error', note: '',
       ...(task ? { constraints, llm } : {}),
+      ...(step === 0 && startBlocker ? { blocker: startBlocker } : {}), // closed at task start, or just before this second look
     };
     if (input.signal?.aborted) return end('stopped', 'stopped before acting');
+    // A pop-up that appeared on its own, mid-task (a newsletter after five seconds): dismiss it and look again.
+    if (task && snap.modal && snap.modal !== flowModal) {
+      const blocker = await clearBlocker({ modal: snap.modal }, hooks, budget);
+      if (input.signal?.aborted) return end('stopped', 'stopped while closing a pop-up');
+      if (blocker?.dismissed) { trace = { ...trace, blocker, winner: blocker.chosen, result: 'acted', note: `a pop-up was in the way: ${blocker.note}` }; hooks.onStep(trace); continue; }
+      flowModal = snap.modal; // it stays: carry on inside it rather than trying again at every step
+      if (blocker) trace.blocker = blocker;
+    }
     if (task && performance.now() - started - waited > MAX_TASK_MS) return end('stuck', `the task ran past ${MAX_TASK_MS / 1000} s`);
 
     // Saved preferences, then price: both are applied in code, before Jev is asked for the next operation.
@@ -231,7 +261,7 @@ export async function runLoop(
     }
 
     // A decision made on a matching interim transcript is reused; otherwise decide now.
-    let decision = step === 0 && input.prepared ? await input.prepared : undefined;
+    let decision = step === 0 && input.prepared && !retried ? await input.prepared : undefined;
     const speculative = step !== 0 ? 'none' : input.prepared ? (decision?.response ? 'hit' : 'miss') : input.specMissed ? 'miss' : 'none';
     if (!decision?.response) {
       decision = await decideOnce({ utterance: input.utterance, goal: input.goal, leash: input.leash, history, asked, prefs: task ? hooks.prefs() : [], constraints: task ? constraints : undefined }, hooks, input.signal, snap);
@@ -245,9 +275,11 @@ export async function runLoop(
     const names: Record<string, string> = {};
     for (const r of decision.snap.snapshot.rows) names[r.id] = r.name;
     for (const s of cands.select) names[s.label] = s.optionLabel;
+    // The deny-list never blocks a decline inside a pop-up or banner. Looked up only for names that decline.
+    const inBlocker = Object.keys(names).filter((id) => declines(names[id]!) && nodes.get(id) && inPopup(nodes.get(id)!));
     const resolution = resolve(response.heads, {
       leash: input.leash, utterance: input.utterance, goal: input.goal, useKind: !task, groups: groupsByLabel(cands),
-      names, needs: response.needs, asked, history,
+      names, inBlocker, needs: response.needs, asked, history,
     });
     trace.resolution = resolution;
     trace.note = resolution.reason;
@@ -260,6 +292,19 @@ export async function runLoop(
     };
 
     let next: Resolution = resolution;
+
+    // Drive mode with a pop-up open: what the user asked for is behind it. Dismiss it and look once more.
+    // Only for a command that could not be carried out inside the pop-up, never for speech that was not for us.
+    const behindPopup = async (): Promise<boolean> => {
+      const modal = decision!.snap.modal;
+      if (task || !modal || retried || response.heads.kind?.choice === 'NOT_FOR_ME') return false;
+      const blocker = await clearBlocker({ modal }, hooks, budget);
+      startBlocker = blocker ?? startBlocker; // the inspector shows it on the command's trace
+      if (blocker) trace.blocker = blocker;
+      if (!blocker?.dismissed || input.signal?.aborted) return false;
+      retried = true;
+      return true;
+    };
 
     if (next.type === 'Disambiguate') {
       // Jev's Choice names one winner even when several candidates fit equally well, so ask a
@@ -276,7 +321,10 @@ export async function runLoop(
           if (ranked.length >= 2) pair = [ranked[0]!.id, ranked[1]!.id];
         }
       }
-      if (ranked?.length === 0) return end(task ? 'stuck' : 'ignored', `${trace.note}; fit check: no candidate fits`, 'not_found');
+      if (ranked?.length === 0) {
+        if (await behindPopup()) { step -= 1; continue; }
+        return end(task ? 'stuck' : 'ignored', `${trace.note}; fit check: no candidate fits`, 'not_found');
+      }
       if (ranked?.length === 1 && next.op === 'CLICK') {
         next = { type: 'Act', op: 'CLICK', target: ranked[0]!.id, reason: `${trace.note}; fit check: only one candidate fits, so act on it` };
       } else if (task) {
@@ -329,6 +377,7 @@ export async function runLoop(
       return end('done');
     }
     if (next.type === 'HandBack') return end(next.outcome);
+    if (next.type === 'Ignore' && next.why !== 'not_for_me' && (await behindPopup())) { step -= 1; continue; }
     if (next.type === 'Ignore') return end('ignored', undefined, next.why);
     if (next.type === 'Answer') return end('ignored', undefined, 'unsure');
     if (next.type === 'Confirm') {
@@ -342,6 +391,7 @@ export async function runLoop(
 
     // Act, or type the transcript as it is into the focused field. Labels are only ever looked up.
     let done: Awaited<ReturnType<typeof act>>;
+    let pressedRole: string | undefined; // the role of what was clicked, if anything was
     if (next.type === 'Dictate') {
       const row = rowsById.get(decision.snap.snapshot.focused ?? '');
       if (row) trace.winner = rowLine(row);
@@ -349,13 +399,22 @@ export async function runLoop(
       if (done.outcome.ok) hooks.onTrail(`Typed ${next.text}`);
     } else {
       const chosen = next.target ? optionFor(next.target) : undefined;
-      if (task && chosen && denied(chosen.row.name, input.goal ?? '')) return end('yours', `${trace.note}; "${chosen.row.name}" is on the deny-list`);
+      if (task && chosen && !inBlocker.includes(chosen.label) && denied(chosen.row.name, input.goal ?? '')) return end('yours', `${trace.note}; "${chosen.row.name}" is on the deny-list`);
       if (chosen) trace.winner = chosen.line;
+      if (next.op === 'CLICK') pressedRole = chosen?.row.role;
       done = await act({ op: next.op, row: chosen?.row, el: chosen?.el, option: chosen?.option, text: next.text }, hooks, history);
       if (done.outcome.ok) hooks.onTrail(trailText(next.op, chosen?.row, next.text ?? chosen?.option?.label));
     }
     trace.t3 = done.t3;
     trace.settleMs = done.settleMs;
+    if (done.blocker) trace.blocker = done.blocker;
+    if (task) {
+      // A modal that follows a press or an opened link is part of the flow. One that shows up after a filter toggle,
+      // a dropdown or typing came on its own (a timer pop-up during settle) and is dismissed at the next step.
+      const opened = openModal(hooks.overlay);
+      const couldOpenIt = done.outcome.ok && !!pressedRole && !['checkbox', 'radio', 'switch', 'option'].includes(pressedRole);
+      if (!opened || opened === flowModal || couldOpenIt) flowModal = opened;
+    }
     trace.result = done.outcome.ok ? 'acted' : 'failed';
     if (!done.outcome.ok) trace.note += `; failed: ${done.outcome.reason}`;
     hooks.onStep(trace);

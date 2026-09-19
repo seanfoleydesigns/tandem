@@ -267,6 +267,7 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
   function explain(trace: Trace) {
     if (trace.result === 'ignored' && trace.why === 'not_for_me') return overlay.showStatus("That didn't sound like it was for me.", 'unsure'); // shown, not spoken
     const text = trace.result === 'error' ? "I couldn't reach the model."
+      : trace.result === 'failed' && trace.blocker && !trace.blocker.dismissed ? "Something is covering that, and I couldn't close it."
       : trace.result === 'failed' ? "I couldn't do that here."
       : trace.result === 'ignored' && trace.why === 'not_found' ? "I can't find that on this page."
       : trace.result === 'ignored' ? "Didn't catch that." : undefined;

@@ -29,6 +29,7 @@ export type PolicyContext = {
   useKind: boolean;
   groups: Record<string, string | undefined>; // candidate label -> group
   names?: Record<string, string>; // candidate label -> accessible name, for the deny-list
+  inBlocker?: string[]; // candidate labels that sit inside a pop-up or banner
   needs?: Record<string, number>; // task leash: group key -> needs_* Noul
   asked?: string[]; // group keys asked or skipped in this task
   history?: ActionRecord[]; // this task's actions, oldest first
@@ -68,6 +69,27 @@ export function denied(name: string, goal: string): boolean {
   if (DENY.test(name)) return true;
   return ADD_TO_CART.test(name) && !ADD_TO_CART.test(goal); // allowed only if the goal literally asks for it
 }
+
+// Pop-ups and banners. A control that accepts, joins or spends is never pressed to get one out of the way.
+// A refusal is a refusal however it is worded: "No thanks, I'd rather pay full price" says no before it says pay.
+const ACCEPT = /\b(accept|agree|allow|subscribe|sign ?(me )?up|join|register|buy)\b/i;
+
+// Word order is not enough: "No thanks, continue to checkout" and "Don't wait - Buy now" put a refusing word first
+// and still spend. A name that mentions accepting or spending counts as a refusal only in one of two shapes:
+//   the guilt trip: it opens with "No" / "No thanks" / "Not now" and goes on in the first person about the user
+//     ("No thanks, I'd rather pay full price", "No, I don't want to subscribe"), without saying they want the offer;
+//   necessary only: it keeps only what is necessary ("Accept only essential cookies"), and nothing says "all".
+const GUILT_TRIP = /^\s*(no|nope|nah|not now|not today|maybe later)\b(,?\s*thanks?( you)?)?[\s,.!:;–—-]*(i\b|i['’]|$)/i;
+const WANTS_IT = /\bi(['’]d| would)? (want|like|love|wish)( to)? (buy|pay|subscribe|purchase|check ?out|join|sign)/i;
+const NECESSARY = /\b(necessary|essential)\b/i;
+const EVERYTHING = /\ball\b|\bnon-?\s?essential|\bmarketing\b|\badvertising\b/i;
+
+export function declines(name: string): boolean {
+  if (GUILT_TRIP.test(name) && !WANTS_IT.test(name)) return true;
+  return NECESSARY.test(name) && !EVERYTHING.test(name);
+}
+
+export const accepts = (name: string): boolean => (ACCEPT.test(name) || DENY.test(name) || ADD_TO_CART.test(name)) && !declines(name);
 
 // Rule 7. The same operation on the same target three times, or three actions in a row that changed nothing.
 export function looping(history: ActionRecord[], next: { op: Operation; target?: string }): string | undefined {
@@ -130,11 +152,13 @@ export function resolve(heads: Heads, ctx: PolicyContext): Resolution {
     // Asking takes precedence over clicking inside the group it would ask about.
     const group = action.target ? ctx.groups[action.target] : undefined;
     if (group && asks.some(([key]) => key === labelKey(group))) return askTop(`${reason}, which is inside a group the user must decide`);
-    if (drive && action.target && name && denied(name, ctx.utterance ?? '')) {
+    // The deny-list never blocks a decline inside a pop-up, however guilt-trippy its wording: refusing spends nothing.
+    const decline = !!action.target && !!ctx.inBlocker?.includes(action.target) && declines(name);
+    if (drive && action.target && name && !decline && denied(name, ctx.utterance ?? '')) {
       return { type: 'Confirm', op, target: action.target, name, reason: `${reason}; "${name}" is on the deny-list, so confirm first` };
     }
     if (!drive) {
-      if (name && denied(name, ctx.goal ?? '')) return { type: 'HandBack', outcome: 'yours', reason: `${reason}; "${name}" is on the deny-list` };
+      if (name && !decline && denied(name, ctx.goal ?? '')) return { type: 'HandBack', outcome: 'yours', reason: `${reason}; "${name}" is on the deny-list` };
       const loop = looping(ctx.history ?? [], { op, target: name || undefined });
       if (loop) return { type: 'HandBack', outcome: 'stuck', reason: `${reason}; loop detected: ${loop}` };
     }

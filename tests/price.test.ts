@@ -48,7 +48,7 @@ describe('price constraints', () => {
   it('builds the wanted range from the constraints', () => {
     expect(wanted({ max_price: 100 })).toEqual({ min: 0, max: 100 });
     expect(wanted({ min_price: 50, max_price: 150 })).toEqual({ min: 50, max: 150 });
-    expect(wanted({ colour: 'white' })).toBeUndefined();
+    expect(wanted({ attributes: { colour: 'white' } })).toBeUndefined();
     expect([100, 100.01].map((p) => within(p, { min: 0, max: 100 }))).toEqual([true, false]);
   });
 
@@ -78,7 +78,7 @@ describe('price constraints', () => {
     const hidden = withoutPriceGroup(snapshot, groups, { max_price: 100 });
     expect(hidden.rows.some((r) => r.group === 'Price')).toBe(false);
     expect(hidden.rows).toHaveLength(snapshot.rows.length - 4);
-    expect(withoutPriceGroup(snapshot, groups, { colour: 'white' })).toBe(snapshot);
+    expect(withoutPriceGroup(snapshot, groups, { attributes: { colour: 'white' } })).toBe(snapshot);
   });
 });
 

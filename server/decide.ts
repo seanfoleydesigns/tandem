@@ -1,14 +1,15 @@
 import type { EntryType } from '@typesafe-ai/sdk';
 import { z } from 'zod';
 import { candidates, describeRow, rowLine } from '../shared/candidates';
-import { DECIDE_RETRIES, DECIDE_TIMEOUT_MS, FIT_POOL, LABEL_STYLE } from '../shared/config';
+import { DECIDE_RETRIES, DECIDE_TIMEOUT_MS, FIT_POOL, LABEL_STYLE, MAX_BLOCKER_CONTROLS } from '../shared/config';
+import { flatConstraints } from '../shared/constraints';
 import { unsetGroups } from '../shared/groups';
 import {
-  fitQuestions, kindQuestion, matchQuestion, needsQuestions, operationQuestionSingle, operationQuestionTask,
+  dismissQuestions, fitQuestions, kindQuestion, matchQuestion, needsQuestions, operationQuestionSingle, operationQuestionTask,
   slateQuestions, targetQuestions, typedSpanQuestion, type ChoiceQuestion, type NoulQuestion,
 } from '../shared/questions';
 import { wordSpans } from '../shared/spans';
-import type { DecideRequest, DecideResponse, FitsRequest, FitsResponse, Head, Heads, MatchRequest, MatchResponse, SlateRequest, SlateResponse } from '../shared/types';
+import type { DecideRequest, DecideResponse, DismissRequest, DismissResponse, FitsRequest, FitsResponse, Head, Heads, MatchRequest, MatchResponse, SlateRequest, SlateResponse } from '../shared/types';
 import { ask } from './jev';
 
 const row = z.object({
@@ -56,7 +57,7 @@ export async function decide(req: DecideRequest): Promise<DecideResponse> {
   const state = task
     ? {
         goal: req.goal ?? '',
-        constraints: req.constraints ?? {},
+        constraints: flatConstraints(req.constraints), // attributes as plain keys: { category, colour, max_price }
         // Price is code's job: the price group is not among the rows, and DONE must not wait for it.
         ...(req.constraints?.max_price !== undefined || req.constraints?.min_price !== undefined
           ? { handled_by_code: ['The price limit is applied by the assistant outside the page. There is no price filter to set.'] } : {}),
@@ -129,6 +130,26 @@ export async function match(req: MatchRequest): Promise<MatchResponse> {
   });
   const { choice, confidence, probabilities } = r.answers.match;
   return { model: r.model, ms: r.ms, usage: r.usage, head: { choice, confidence, probabilities } };
+}
+
+export const dismissRequest = z.object({
+  blocker: z.object({ kind: z.string().max(40), title: z.string().max(200), text: z.string().max(600) }),
+  controls: z.array(row).min(1).max(MAX_BLOCKER_CONTROLS), // one Jev request each
+});
+
+// A pop-up or banner is in the way: which of its own controls refuses or closes it? Accepting ones were removed in code.
+export async function dismiss(req: DismissRequest): Promise<DismissResponse> {
+  // One small request per control, in parallel: Jev judges best when the thing judged is a state key of its own.
+  const started = performance.now();
+  const answers = await Promise.all(req.controls.map((c) =>
+    ask({ blocker: req.blocker, control: c.name }, dismissQuestions(), { timeout: DECIDE_TIMEOUT_MS, retry: { maxRetries: 1 } })));
+  const scores: DismissResponse['scores'] = {};
+  req.controls.forEach((c, i) => {
+    const a = answers[i]!.answers as Record<string, { noul: number }>;
+    scores[c.id] = { refuses: a.refuses!.noul, accepts: a.accepts!.noul };
+  });
+  const usage = { input_tokens: answers.reduce((n, r) => n + r.usage.input_tokens, 0), output_tokens: answers.reduce((n, r) => n + r.usage.output_tokens, 0) };
+  return { model: answers[0]!.model, ms: Math.round(performance.now() - started), usage, scores };
 }
 
 export const slateRequest = z.object({

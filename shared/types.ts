@@ -31,9 +31,11 @@ export type Kind = 'ACTION' | 'TASK' | 'ANSWER' | 'DICTATION' | 'STOP' | 'NOT_FO
 
 export type Preference = { label: string; value: string; scope: string; ts: number };
 
+// What the goal states, on any kind of site. On a shop the attributes are { category, colour }; elsewhere
+// they may be { topic } or { language }. Prices stay numbers, because comparing them is code's job.
 export type Constraints = {
-  category?: string; colour?: string; max_price?: number; min_price?: number;
-  search_query?: string; visual_prefs?: string[];
+  search_query?: string; attributes?: Record<string, string>;
+  max_price?: number; min_price?: number; visual_prefs?: string[];
 };
 
 // Ids change with every snapshot, so a target is remembered by what it was, not by its id.
@@ -100,6 +102,10 @@ export type FitsResponse = { model: string; ms: number; usage: JevUsage; fits: R
 // Answer matching: which option does the spoken answer mean? One Choice over the option names.
 export type MatchRequest = { group: string; options: string[]; answer: string };
 export type MatchResponse = { model: string; ms: number; usage: JevUsage; head: Head };
+
+// A pop-up or banner is in the way: which of its own controls refuses or closes it? One Choice over their ids.
+export type DismissRequest = { blocker: { kind: string; title: string; text: string }; controls: ElementRow[] };
+export type DismissResponse = { model: string; ms: number; usage: JevUsage; scores: Record<string, { refuses: number; accepts: number }> }; // by control id
 
 // Clean slate, once at task start: is the goal a refinement, and which set filter options does it ask for?
 export type SlateRequest = { goal: string; page: { title: string; headings: string[]; notices: string[] }; filters: { id: string; text: string }[] };

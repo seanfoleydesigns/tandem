@@ -1,6 +1,7 @@
 import './styles.css';
 import { cartCount } from './cart';
 import { CATEGORIES, parseFilters, title } from './catalog';
+import { gym } from './gym';
 import { esc } from './html';
 import { renderCart } from './pages/cart';
 import { renderListing } from './pages/listing';
@@ -45,6 +46,7 @@ function route() {
   else main.innerHTML = `<h1>Page not found</h1><p><a href="/">Back to all shoes</a></p>`;
 
   document.title = `${main.querySelector('h1')?.textContent ?? 'Shoes'} · Footnote`;
+  gym(); // ?gym=hard: cookie banner, newsletter pop-up
 
   document.getElementById('search-form')!.addEventListener('submit', (e) => {
     e.preventDefault();

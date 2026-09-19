@@ -28,7 +28,7 @@ A voice-driven layer that sits on top of a web page and shares control of it wit
 | Every moment-to-moment decision: what kind of utterance, which operation, which element, whether to ask, which option matches a spoken answer | **Jev** (TypeSafe System One model) | One request per decision cycle, all questions in parallel |
 | Arithmetic, counting, ordinals, dates, price comparison, loop detection, safety rules, "stop" | **Code** | Never ask a model what code can compute |
 | Parse a fuzzy request into constraints at task start; verify and summarise at task end | **LLM** (M4) | Never between the user's voice and an action. Never counts, never compares prices |
-| Look at product photos | **Vision LLM** (M5, stretch) | Background, parallel, cached, shortlist only |
+| Look at product photos | **Vision LLM** (dropped: M5 became "take it to the real web") | Background, parallel, cached, shortlist only |
 
 ### Jev: read this before writing any Jev code
 
@@ -100,7 +100,7 @@ flowchart LR
 CLAUDE.md  SPEC.md  NOTES.md  README.md  .env  .env.example  .gitignore
 docs/jev/            official Jev docs, pasted in by me
 server/
-  index.ts           routes: /api/health, /api/warm, /api/decide, /api/fits, /api/match, /api/slate, (M4) /api/parse, /api/verify
+  index.ts           routes: /api/health, /api/warm, /api/decide, /api/fits, /api/match, /api/slate, (M5) /api/dismiss, (M4) /api/parse, /api/verify
   jev.ts             SDK client; builds questions from shared/questions.ts
   llm.ts             (M4) parseGoal, verifyAndSummarise behind a provider-agnostic interface
 shared/
@@ -109,10 +109,14 @@ shared/
   policy.ts          pure functions: thresholds, ambiguity rule, deny-list, loop detection
   config.ts          thresholds and caps
   price.ts           (M4) price is code's job: ranges, card prices, counts, routing, the no-LLM fallback
+  constraints.ts     (M5) generic constraints: pairs to record, key-by-key merge, the flat form Jev reads
+  blockers.ts        (M5) pop-ups and banners: what may never be pressed, the exact refusals code takes, the budget
   digest.ts          (M4) the small page digest the LLM sees
 agent/
   index.ts           boot; mount overlay
   snapshot.ts        DOM to element table; id to node map; groups; ordinals
+  dom.ts             (M5) the DOM through open shadow roots: deep query, composed ancestors, deep hit-testing
+  blockers.ts        (M5) find the pop-up or banner, read its own controls, press the one that says no
   execute.ts         click, type, select, scroll, back; settle wait
   loop.ts            the one loop
   voice.ts           recognition, speech output, echo guard, stop fast path
@@ -166,7 +170,7 @@ type DecideRequest = {
   leash: 'single' | 'task';
   utterance?: string;         // the final transcript that triggered this cycle
   goal?: string;              // active task goal
-  constraints?: Constraints;  // from /api/parse (M4)
+  constraints?: Constraints;  // from /api/parse (M4). Generic since M5: { search_query?, attributes?: Record<string,string>, max_price?, min_price?, visual_prefs?[] }
   prefs: Preference[];
   history: ActionRecord[];    // last 6, with outcomes
   pending?: { group: string };
@@ -207,7 +211,7 @@ Send only what the questions need. Keep page text out of state unless it is a ro
 3. Take the target head for the chosen operation. A choice of `none` counts as low confidence.
 4. **Ambiguity rule.** If the top probability is under `AMBIG_TOP` and the candidates covering 80% of the probability mass share one `group`: task mode asks about that group; drive mode disambiguates ("say one or two"). This is the core idea: uncertainty becomes a question. In practice Jev rarely splits a Choice like this, so rule 5 and the fit check do most of this work.
 5. Other low-confidence targets go to the **fit check** on both leashes. Drive mode: two or more fit, badge the best two; one fits, act; none, ignore. Task mode: several fitting options inside one unset control group is an Ask about that group; one fits, act (after the deny-list); anything else is STUCK.
-6. **Deny-list.** Anything whose name matches buy, purchase, place order, checkout, pay, confirm, subscribe; and "Add to cart" unless the goal or utterance literally asks for it. **Task mode:** never click it; hand back with "This one's yours." **Drive mode:** confirm instead of block. Speech can be misheard, so anything that spends money needs a second, explicit yes: a confirm card ("Click Checkout?" with Yes and No chips), where "yes" and "no" are handled in code and any other utterance withdraws the confirmation and runs as a new command.
+6. **Deny-list.** Anything whose name matches buy, purchase, place order, checkout, pay, confirm, subscribe; and "Add to cart" unless the goal or utterance literally asks for it. **Task mode:** never click it; hand back with "This one's yours." **Drive mode:** confirm instead of block. Speech can be misheard, so anything that spends money needs a second, explicit yes: a confirm card ("Click Checkout?" with Yes and No chips), where "yes" and "no" are handled in code and any other utterance withdraws the confirmation and runs as a new command. **A decline is never blocked (M5):** a control inside a pop-up (a dialog, or a fixed box that talks about cookies or consent; never a sticky header or other page chrome) whose name is a refusal is simply pressed on either leash; the same words outside a pop-up still get the deny-list. A name that mentions accepting or spending counts as a refusal only in one of two shapes: the guilt trip, which opens with "No" / "No thanks" / "Not now" and goes on in the first person ("No thanks, I'd rather pay full price"), or necessary-only ("Accept only essential cookies", and nothing says "all"). Word order alone is not enough: "No thanks, continue to checkout" and "Don't wait - Buy now" stay denied. A blocker's accepting controls are removed in code before Jev is asked anything (section 8, Blockers).
 7. **Loop detection.** Same operation and target three times, or three actions with no DOM change, is STUCK.
 8. Otherwise act.
 
@@ -222,7 +226,7 @@ Thresholds in `shared/config.ts`: `OP_MIN 0.5`, `TARGET_MIN 0.75` (raised from 0
 - **Neither**, such as a list of actions: leave the page as it is.
 - A saved preference that is already set to its saved value gets a chip with no action: "Kept your saved size: 10.5".
 
-Probe numbers (`scripts/probe-slate.ts`): *refines* 0.08 to 0.55 for new searches and 0.72 to 0.90 for refinements; *names a product* 0.93 to 0.95 against 0.13 to 0.62; an option the goal asks for 0.87 to 0.93, any other 0.05 or less. Two limits: a radio cannot be switched off by clicking it, so a leftover radio that is not a saved preference stays; and a stale **category** is a link, not a filter, so it is left to the normal loop, whose DONE and CLICK wording now says a search is not done while the page shows a different category from the kind of product the goal names.
+Probe numbers (`scripts/probe-slate.ts`): *refines* 0.08 to 0.55 for new searches and 0.72 to 0.90 for refinements; *names a product* 0.93 to 0.95 against 0.13 to 0.62; an option the goal asks for 0.87 to 0.93, any other 0.05 or less. Two limits: a radio cannot be switched off by clicking it, so a leftover radio that is not a saved preference stays; and a stale **category** is a link, not a filter, so it is left to the normal loop, whose DONE and CLICK wording now says a search is not done while the page shows a different category from the kind of product the goal names. **M5:** both sentences were made domain-neutral. *names a product* now asks whether the goal contains a NOUN for the kind of thing to look for ("a brand, a colour, a price or a word such as 'ones' is not such a noun"): new searches 0.75 to 0.90, refinements 0.30 to 0.50 (the shop wording let "the arco ones" reach 0.72), a settings request 0.27, a news search 0.85.
 
 **Asking (task leash, redesigned in M3).** Every task-leash decide request carries two Nouls per unset control group that has not been asked or skipped in this task:
 
@@ -260,6 +264,18 @@ runLoop({ goal | utterance, leash }):
 **Latency.** Log t0 final transcript, t1 request sent, t2 response, t3 action done; show them in the inspector. For voice the inspector reports two numbers per utterance: final transcript to action, and last interim change to action. The second is the honest one for how it feels, because it includes the time the recognizer takes to finalise. Target t3 − t0 of 600 ms or less at p50 on the local store. Optional in M2: fire `/api/decide` speculatively when an interim transcript has been stable for 300 ms, and use that answer if the final transcript matches. The Jev call behind `/api/decide` has a 2500 ms timeout. It does not retry on the single leash; one quick retry is allowed on the task leash.
 
 **Typing without an LLM.** Jev can't write, so in drive mode the text to type must come from the user's own words. Generate every contiguous word span of the utterance in code (200 at most, deduplicated, longest first; 200 covers any utterance of up to 19 words and stays clear of the 255-label cap) and let the `typed_span` head choose one. If overlapping spans split the probability badly, the fallback is two heads, the **first word** and the **last word** of the text to type, each label described with its neighbouring words for context; code joins the words between them. In task mode, text comes from `constraints.search_query` (M4) or from a saved preference. Whether text is available is computable, so code decides: when neither source exists, TYPE is not offered as an operation on the task leash (the chips-only question card cannot ask for free text).
+
+**Any website, not only a shop (M5).** The instructions in `shared/questions.ts` and the two LLM prompts are domain-neutral; shopping appears only as examples ("for example, on a shop, the kind of product"). `Constraints` is generic: `{ search_query?, attributes?: Record<string, string>, max_price?, min_price?, visual_prefs?[] }`; on a shop the attributes are `{ category, colour }`. A structured-output schema cannot express a free-form record (it would silently always come back empty), so the LLM returns `{name, value}` pairs and code builds the record, with names normalised like control group keys. A refinement merges attributes key by key. Jev reads the constraints flattened to top-level keys, so its state is the same shape it always was. `scripts/probe-heads.ts` saves every production score through the real routes, to compare before and after a rewording.
+
+**Open shadow roots (M5).** The snapshot walks open shadow roots (`element.shadowRoot`) wherever it queries: rows, headings, notices, the modal, `main`. Names resolve ids inside the element's own root and read a `<slot>`'s assigned text; group labels and ancestors are followed through the host, one tree at a time, because document order means nothing across a boundary. The covered check goes down into open roots (`document.elementsFromPoint` stops at the host), synthetic input and key events are `composed`, and settle also observes the open roots. A page without shadow roots takes exactly the old code path. **Closed roots stay invisible: that is a limit.** So do iframes.
+
+**Blockers (M5).** A cookie banner or a newsletter pop-up is dismissed first when (a) the covered check fails because of it, on either leash, (b) a modal is open at task start, (c) a modal appears on its own mid-task, or (d) in drive mode a modal is open and the command cannot be carried out inside it. A modal the task's own action opened is part of the flow and is left alone.
+
+- *Finding it.* From what covers the target, up to the nearest dialog, `[role=dialog]`, `[aria-modal]` or fixed / sticky box (cookie banners are rarely dialogs). An open modal is a native `<dialog>` shown with `showModal()`, or a visible `[aria-modal="true"]`; the snapshot is scoped to it.
+- *Choosing among its own buttons and links.* Code first removes every control whose name accepts, agrees, allows, subscribes, signs up, joins, buys or is on the deny-list, unless the name has one of the two refusal shapes of section 7. A blocker never contains the thing it covers: a web app's fixed shell is not a pop-up, and none of its buttons is pressed. An exact plain refusal ("Reject all", "Necessary only", "No thanks", "Not now") or close ("Close", "×"; the letter "X" only when it is a button, because a link named X goes somewhere) is taken in code with no model call. Anything less plain goes to Jev: `POST /api/dismiss`, one small request per control in parallel with `{ blocker, control }` as state, two Nouls each, combined in code: *dismisses = refuses × (1 − accepts)*, pressed at `DISMISS_MIN` 0.6 or more. At most 6 controls are asked, at most 3 attempts per task or command, never the same control twice.
+- The blocker's text sent to Jev is what a person can read (`innerText`), never hidden text, and both `blocker` and `control` are declared page content.
+- *Then* the same action is tried once more, unless the user said stop meanwhile. In drive mode only a command dismisses a pop-up; speech that was probably not for the agent never closes anything. A modal that follows the agent's own press or opened link is part of the flow; one that shows up after a filter toggle, a dropdown or typing came on its own and is dismissed at the next step. The trail says "Closed the cookie banner", "Dismissed a pop-up" or "Closed a banner"; nothing is spoken. If nothing may be pressed the blocker stays and the agent says "Something is covering that, and I couldn't close it." The inspector shows what was offered, what code removed, Jev's two scores per control, and who chose.
+- This click does not go through `policy.resolve`, so the deny-list cannot stop a refusal; what makes it safe is that the choice is limited to the blocker's own controls, the accepting ones are gone before any model sees them, and a control that accepts without saying so ("OK", "Got it") scores low on *refuses*. Such a banner is left in place: a limit.
 
 **The LLM at the edges (M4).** Two calls per task, none in drive mode. Both live in `server/llm.ts`, the only file that knows the provider; the model id is read there once, from `LLM_MODEL` (verified against the provider: `claude-haiku-4-5-20251001`). Each call has a 4 s timeout, no retries, zod-validated structured output, and always answers 200 with `llm.ok` false when the key is missing, the call times out, or the provider refuses. The key never leaves the server and is never logged.
 
@@ -317,7 +333,7 @@ A believable shoe shop, built like a well-made real site: semantic HTML, proper 
 - **Listing `/`:** header with a search box and category nav; filter panel with Colour (checkboxes), Size (radio chips), Brand (checkboxes), Closure (checkboxes), Price (radio ranges), and a native `<select>` for sort; a visible result count; a product grid; "Load more".
 - **Product `/product/:id`:** title, price, description, a required Size selector, Quantity `<select>`, and "Add to cart", which shows an inline error when no size is chosen.
 - **Cart `/cart`:** items, plus a "Checkout" button that opens a "Demo only" dialog. The agent must never click it in task mode.
-- **`?gym=hard`** adds realistic friction: a cookie banner, a newsletter modal after five seconds, Size tucked behind a "More filters" disclosure, and one custom ARIA listbox. Default is easy mode.
+- **`?gym=hard`** adds realistic friction: a cookie banner, a newsletter modal after five seconds, Size tucked behind a "More filters" disclosure, and one custom ARIA listbox. Default is easy mode. Built in M5 (`store/src/gym.ts`): the mode is kept in sessionStorage so it survives client-side navigation (`?gym=easy` switches it off); the banner is as tall as real consent banners ("Accept all", "Necessary only", "Manage preferences") so that it really covers things; the pop-up has "Subscribe and save" and a guilt-trip refusal, "No thanks, I'd rather pay full price", and no close button; the sort becomes the custom listbox.
 
 ## 12. Milestones
 
@@ -351,11 +367,15 @@ Work in order. One milestone at a time. Each ends with its acceptance checks run
 *Accept:* "find me white sneakers under a hundred dollars" ends on Sneakers, White and the saved size, with cards over $100 dimmed and a spoken summary with correct counts; "only the ones under a hundred and fifty" as a refinement keeps the filters and re-dims; drive-mode timings unchanged from M2 and no LLM request in drive mode (a test fails if there is one); with the key removed, the M3 hero scenario still passes.
 *Accept:* "white sneakers under a hundred dollars" ends with every visible result at $100 or less and a spoken summary; with the LLM key removed, everything from M3 still works.
 
-**M5 · Stretch, in this order.** (a) `?gym=hard` passes the hero scenario. (b) Eyes: a background vision pass over shortlist images returns typed attributes (dominant colour, closure, logo: none, small, large), cached by URL; the overlay dims cards that fail `visual_prefs`. (c) Inject `dist/agent.js` into one real shop, and record honestly where it breaks.
+**M5 · Take it to the real web.** (Replaces the earlier stretch list; the vision pass is dropped.) The same agent runs on any website through a Chrome extension, survives page loads, and the README says honestly where it works and where it breaks. The store demo must keep working exactly as before.
+1. *De-shop the core.* Domain-neutral wording, generic `Constraints`, open shadow roots (section 8). Re-run the probes and the store acceptance; report every score that moves by more than 0.1.
+2. *Blockers* (section 8), tested with `?gym=hard`. *Accept:* with the pop-up open, "find me white sneakers" dismisses it first and finishes; "check white" in drive mode dismisses it and checks White; a banner that covers "Load more" is closed with "Necessary only" and the click lands; "Subscribe" and "Accept all" are never pressed; the M3 and M4 acceptance still pass in easy mode.
+3. *Chrome extension (MV3)*, in `extension/`: off by default, on per tab from the toolbar; the content script is the same agent bundle; a background service worker proxies `/api/*` to the local server and holds task state in `chrome.storage.session`, so a task survives a page load; saved preferences live in `chrome.storage.local`; never type into password or payment fields, never submit a form on the task leash unless the goal asks.
+4. *Real-site trial:* a voice test script for a reference site, a list site and one real shop; fix at most the two cheapest failures and write the rest up as known limits.
 
 ## 13. Out of scope
 
-Deployment, accounts, payments, mobile, non-Chrome browsers, multi-tab, iframes, shadow-DOM sites, canvas, file uploads, languages other than English, and any persistence beyond localStorage.
+Deployment, accounts, payments, mobile, non-Chrome browsers, multi-tab, iframes, closed shadow roots (open ones are read since M5), canvas, file uploads, languages other than English, and any persistence beyond localStorage.
 
 ## Appendix A · Initial Jev wording (tune freely, keep it literal)
 

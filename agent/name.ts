@@ -1,4 +1,6 @@
 // Accessible name and role of an element. Pure DOM reads with no layout, so it runs under jsdom.
+// Works inside open shadow roots: ids resolve in the element's own tree, ancestors are followed through the host.
+import { byId, composedParent, hostOf } from './dom';
 
 const clean = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
 
@@ -13,7 +15,11 @@ function textOf(node: Node, skip?: Element): string {
       const el = child as Element;
       if (el === skip || el.getAttribute('aria-hidden') === 'true' || FORM_CONTROLS.has(el.tagName)) return;
       if (el.tagName === 'IMG') out += ` ${el.getAttribute('alt') ?? ''} `;
-      else out += ` ${textOf(el, skip)} `;
+      // A component's <slot> shows the text its user put between the tags: <fancy-button>Reject all</fancy-button>.
+      else if (el.tagName === 'SLOT' && (el as HTMLSlotElement).assignedNodes?.({ flatten: true }).length) {
+        for (const n of (el as HTMLSlotElement).assignedNodes({ flatten: true })) out += n.nodeType === 3 ? n.textContent ?? '' : ` ${textOf(n, skip)} `;
+      }
+      else out += ` ${textOf(el.shadowRoot ?? el, skip)} `; // a component shows what its shadow root renders
     }
   });
   return out;
@@ -26,7 +32,7 @@ export function accessibleName(el: Element): string {
   if (!name) {
     const ids = clean(el.getAttribute('aria-labelledby'));
     if (ids) {
-      name = clean(ids.split(' ').map((id) => textOf(el.ownerDocument.getElementById(id) ?? el.ownerDocument.createTextNode(''))).join(' '));
+      name = clean(ids.split(' ').map((id) => textOf(byId(el, id) ?? el.ownerDocument.createTextNode(''))).join(' '));
     }
   }
   if (!name) {
@@ -68,14 +74,22 @@ function labelOf(el: Element): string {
   const direct = clean(el.getAttribute('aria-label'));
   if (direct) return direct;
   const ids = clean(el.getAttribute('aria-labelledby'));
-  return ids ? clean(ids.split(' ').map((id) => el.ownerDocument.getElementById(id)?.textContent ?? '').join(' ')) : '';
+  return ids ? clean(ids.split(' ').map((id) => byId(el, id)?.textContent ?? '').join(' ')) : '';
+}
+
+function lastHeadingBefore(scope: ParentNode, anchor: Element): Element | undefined {
+  let last: Element | undefined;
+  scope.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach((h) => {
+    if (h.compareDocumentPosition(anchor) & 4 /* anchor follows h */ && !h.contains(anchor)) last = h;
+  });
+  return last;
 }
 
 // Group label: fieldset legend, then a labelled ARIA group or section, then the nearest heading before the element.
 export function groupOf(el: Element): string | undefined {
-  for (let a = el.parentElement; a && a.tagName !== 'BODY'; a = a.parentElement) {
+  for (let a = composedParent(el); a && a.tagName !== 'BODY'; a = composedParent(a)) {
     if (a.tagName === 'FIELDSET') {
-      const legend = a.querySelector(':scope > legend');
+      const legend = Array.from(a.children).find((c) => c.tagName === 'LEGEND'); // a direct child; no :scope, which jsdom gets wrong inside shadow roots
       if (legend) return clean(textOf(legend)).slice(0, 60) || undefined;
     }
     if (GROUP_TAGS.has(a.tagName) || GROUP_ROLES.has(a.getAttribute('role') ?? '')) {
@@ -83,13 +97,16 @@ export function groupOf(el: Element): string | undefined {
       if (label) return label.slice(0, 60);
     }
   }
-  for (let a = el.parentElement; a && a.tagName !== 'BODY'; a = a.parentElement) {
-    const headings = a.querySelectorAll('h1,h2,h3,h4,h5,h6');
-    let last: Element | undefined;
-    headings.forEach((h) => {
-      if (h.compareDocumentPosition(el) & 4 /* el follows h */ && !h.contains(el)) last = h;
-    });
-    if (last) return clean(last.textContent).slice(0, 60) || undefined;
+  // One tree at a time, because document order means nothing across a shadow boundary: look inside the element's
+  // own tree, then step out to the host and look again with the host standing in for the element.
+  for (let n: Element | null = el; n; n = hostOf(n)) {
+    for (let a = n.parentElement; a && a.tagName !== 'BODY'; a = a.parentElement) {
+      const h = lastHeadingBefore(a, n);
+      if (h) return clean(h.textContent).slice(0, 60) || undefined;
+    }
+    const root = n.getRootNode();
+    const h = root instanceof ShadowRoot ? lastHeadingBefore(root, n) : undefined;
+    if (h) return clean(h.textContent).slice(0, 60) || undefined;
   }
   return undefined;
 }

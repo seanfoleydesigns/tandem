@@ -1,8 +1,8 @@
 import express from 'express';
 import { z } from 'zod';
 import { HEALTH_STATE, healthQuestions } from '../shared/questions';
-import type { DecideRequest, FitsRequest, HealthResponse, MatchRequest, SlateRequest, VerifyRequest } from '../shared/types';
-import { decide, decideRequest, fits, fitsRequest, match, matchRequest, slate, slateRequest } from './decide';
+import type { DecideRequest, DismissRequest, FitsRequest, HealthResponse, MatchRequest, SlateRequest, VerifyRequest } from '../shared/types';
+import { decide, decideRequest, dismiss, dismissRequest, fits, fitsRequest, match, matchRequest, slate, slateRequest } from './decide';
 import { ask, describeError, warm } from './jev';
 import { parseGoal, verifyAndSummarise } from './llm';
 
@@ -68,6 +68,20 @@ app.post('/api/match', async (req, res) => {
   }
   try {
     res.json(await match(parsed.data as MatchRequest));
+  } catch (err) {
+    res.status(502).json({ ok: false, ...describeError(err) });
+  }
+});
+
+// A pop-up or banner covers the page: which of its own controls refuses or closes it?
+app.post('/api/dismiss', async (req, res) => {
+  const parsed = dismissRequest.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.issues.map((i) => i.path.join('.') + ': ' + i.message).join('; ') });
+    return;
+  }
+  try {
+    res.json(await dismiss(parsed.data as DismissRequest));
   } catch (err) {
     res.status(502).json({ ok: false, ...describeError(err) });
   }

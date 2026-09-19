@@ -2,6 +2,7 @@ import {
   applyFilters, BRANDS, CLOSURES, COLOURS, money, PAGE_SIZE, parseFilters, PRICE_RANGES,
   products, SIZES, SORTS, title, toQuery, type Filters, type Product,
 } from '../catalog';
+import { gymHard } from '../gym';
 import { esc, shoeImage } from '../html';
 
 function checks(legend: string, name: string, values: string[], selected: string[]): string {
@@ -36,6 +37,10 @@ function heading(f: Filters): string {
 export function renderListing(main: HTMLElement) {
   let filters = parseFilters(location.search);
   let shown: number = (history.state as { shown?: number } | null)?.shown ?? PAGE_SIZE;
+  const hard = gymHard();
+  const size = radios('Size', 'size', SIZES.map((s) => ({ id: s, label: s })), filters.size, true);
+  const closure = checks('Closure', 'closure', CLOSURES, filters.closure);
+  const sortLabel = () => SORTS.find((s) => s.id === filters.sort)?.label ?? SORTS[0]!.label;
 
   main.innerHTML = `
     <h1>${heading(filters)}</h1>
@@ -43,20 +48,27 @@ export function renderListing(main: HTMLElement) {
       <form id="filters" class="filters" aria-label="Filters">
         <h2>Filters</h2>
         ${checks('Colour', 'colour', COLOURS, filters.colour)}
-        ${radios('Size', 'size', SIZES.map((s) => ({ id: s, label: s })), filters.size, true)}
+        ${hard ? '' : size}
         ${checks('Brand', 'brand', BRANDS, filters.brand)}
-        ${checks('Closure', 'closure', CLOSURES, filters.closure)}
+        ${hard ? '' : closure}
         ${radios('Price', 'price', [{ id: '', label: 'Any price' }, ...PRICE_RANGES], filters.price)}
+        ${hard ? `<button type="button" id="more-filters" aria-expanded="false" aria-controls="more-filters-panel">More filters</button>
+        <div id="more-filters-panel" class="filters" hidden>${size}${closure}</div>` : ''}
         <button type="button" id="clear-filters">Clear all filters</button>
       </form>
       <section class="results" aria-labelledby="results-heading">
         <div class="results-bar">
           <h2 id="results-heading">Results</h2>
           <p id="result-count" role="status"></p>
-          <label for="sort">Sort by</label>
+          ${hard ? `<div class="sortbox">
+            <button type="button" id="sort-button" aria-haspopup="listbox" aria-expanded="false" aria-controls="sort-list">Sort by: ${esc(sortLabel())}</button>
+            <ul id="sort-list" role="listbox" aria-label="Sort by" tabindex="-1" hidden>
+              ${SORTS.map((s) => `<li role="option" id="sort-${s.id}" data-value="${s.id}" aria-selected="${s.id === filters.sort}" tabindex="-1">${s.label}</li>`).join('')}
+            </ul>
+          </div>` : `<label for="sort">Sort by</label>
           <select id="sort" name="sort">
             ${SORTS.map((s) => `<option value="${s.id}"${s.id === filters.sort ? ' selected' : ''}>${s.label}</option>`).join('')}
-          </select>
+          </select>`}
         </div>
         <ul class="grid" id="grid"></ul>
         <p id="no-results" hidden>No shoes match these filters.</p>
@@ -65,7 +77,7 @@ export function renderListing(main: HTMLElement) {
     </div>`;
 
   const form = main.querySelector<HTMLFormElement>('#filters')!;
-  const sort = main.querySelector<HTMLSelectElement>('#sort')!;
+  const sort = main.querySelector<HTMLSelectElement>('#sort'); // easy mode: a native select
   const grid = main.querySelector<HTMLElement>('#grid')!;
   const count = main.querySelector<HTMLElement>('#result-count')!;
   const none = main.querySelector<HTMLElement>('#no-results')!;
@@ -95,14 +107,36 @@ export function renderListing(main: HTMLElement) {
       brand: data.getAll('brand') as string[],
       closure: data.getAll('closure') as string[],
       price: (data.get('price') as string | null) ?? '',
-      sort: sort.value,
+      sort: sort ? sort.value : filters.sort,
     };
     shown = PAGE_SIZE;
     commit();
   }
 
   form.addEventListener('change', readForm);
-  sort.addEventListener('change', readForm);
+  sort?.addEventListener('change', readForm);
+
+  // Hard mode: "More filters" is a disclosure, and the sort is a custom listbox.
+  const moreFilters = main.querySelector<HTMLButtonElement>('#more-filters');
+  moreFilters?.addEventListener('click', () => {
+    const open = moreFilters.getAttribute('aria-expanded') !== 'true';
+    moreFilters.setAttribute('aria-expanded', String(open));
+    main.querySelector<HTMLElement>('#more-filters-panel')!.hidden = !open;
+  });
+  const sortButton = main.querySelector<HTMLButtonElement>('#sort-button');
+  const sortList = main.querySelector<HTMLElement>('#sort-list');
+  const openSort = (open: boolean) => { sortButton!.setAttribute('aria-expanded', String(open)); sortList!.hidden = !open; };
+  sortButton?.addEventListener('click', () => openSort(sortList!.hidden === true));
+  sortList?.addEventListener('click', (e) => {
+    const option = (e.target as Element).closest<HTMLElement>('[role=option]');
+    if (!option) return;
+    filters = { ...filters, sort: option.dataset.value! };
+    sortList.querySelectorAll('[role=option]').forEach((o) => o.setAttribute('aria-selected', String(o === option)));
+    sortButton!.textContent = `Sort by: ${sortLabel()}`;
+    openSort(false);
+    shown = PAGE_SIZE;
+    commit();
+  });
   main.querySelector('#clear-filters')!.addEventListener('click', () => {
     form.reset();
     form.querySelectorAll<HTMLInputElement>('input').forEach((i) => (i.checked = false));
