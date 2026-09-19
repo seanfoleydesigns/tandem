@@ -125,7 +125,7 @@ What this says:
 
 ## 2026-09-19 · M2: voice
 
-Started 14:15, finished 14:30 EDT (about 15 min against a 25 min box). Real-voice acceptance is Sean's to run in Chrome: the Browser pane I test in blocks the microphone. Everything below was checked with the dev simulator, which feeds the same pipeline as the recognizer.
+Started 14:15, finished 14:28 EDT (about 13 min against a 25 min box). Real-voice acceptance is Sean's to run in Chrome: the Browser pane I test in blocks the microphone. Everything below was checked with the dev simulator, which feeds the same pipeline as the recognizer.
 
 **Built**
 
