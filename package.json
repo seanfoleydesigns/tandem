@@ -1,0 +1,29 @@
+{
+  "name": "tandem",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c blue,green \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "tsx watch --env-file=.env server/index.ts",
+    "dev:web": "vite",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc --noEmit",
+    "build:agent": "vite build --config vite.agent.config.ts"
+  },
+  "dependencies": {
+    "@typesafe-ai/sdk": "^0.6.0",
+    "express": "^5.2.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.2",
+    "concurrently": "^10.0.5",
+    "jsdom": "^29.1.1",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1"
+  }
+}
