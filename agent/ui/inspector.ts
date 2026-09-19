@@ -1,11 +1,14 @@
 // Inspector: a plain table. Model id, timings, each head's top three, and the policy reason in words.
 import { NONE, NO_SPAN } from '../../shared/candidates';
 import type { LabelStyle } from '../../shared/config';
-import type { Head } from '../../shared/types';
+import type { Head, LlmCall } from '../../shared/types';
 import type { Trace } from '../loop';
 
 const esc = (s: unknown) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 const ms = (a?: number, b?: number) => (a === undefined || b === undefined ? '–' : `${Math.round(b - a)} ms`);
+
+// LLM latency and tokens, shown next to Jev's.
+const llmCell = (c: LlmCall) => (c.ok ? `${c.ms} ms · ${c.input_tokens} in / ${c.output_tokens} out · ${esc(c.model ?? '')}` : `unavailable (${esc(c.error ?? 'no answer')}) · ${c.ms} ms`);
 
 const HEAD_FOR_OP: Record<string, string[]> = {
   CLICK: ['click_target'], TYPE: ['type_target', 'typed_span'], SELECT: ['select_target'], ASK_USER: ['ask_group'],
@@ -48,7 +51,11 @@ export function renderInspector(trace: Trace | undefined, labelStyle: LabelStyle
       <tr><th>last interim change → action</th><td class="num"><b>${ms(heard.lastInterim, t3)}</b></td></tr>
       <tr><th>last interim change → final transcript</th><td class="num">${ms(heard.lastInterim, heard.final)}</td></tr>
       <tr><th>speculative decide</th><td>${speculative}</td></tr>
-      <tr><th>decide round trip (t2 − t1)</th><td class="num">${ms(t1, t2)}, of which Jev ${r ? `${r.ms} ms` : '–'}</td></tr>
+      <tr><th>decide round trip (t2 − t1)</th><td class="num">${ms(t1, t2)}, of which Jev ${r ? `${r.ms} ms · ${r.usage.input_tokens} in` : '–'}</td></tr>
+      ${trace.llm?.parse ? `<tr><th>LLM parse (task start)</th><td class="num">${llmCell(trace.llm.parse)}</td></tr>` : ''}
+      ${trace.llm?.verify ? `<tr><th>LLM verify (task end)</th><td class="num">${llmCell(trace.llm.verify)}</td></tr>` : ''}
+      ${trace.constraints ? `<tr><th>constraints</th><td class="num">${esc(JSON.stringify(trace.constraints))}</td></tr>` : ''}
+      ${trace.verdict ? `<tr><th>verdict</th><td class="num">${trace.verdict.ok ? 'ok' : `not ok: ${esc(trace.verdict.issues.join('; '))}`}</td></tr>` : ''}
       <tr><th>snapshot · act · settle</th><td class="num">${trace.snapshotMs} ms · ${ms(Math.max(t2, heard.final), t3)} · ${trace.settleMs ?? '–'} ms</td></tr>
     </table>`;
   if (!r) return title + summary;

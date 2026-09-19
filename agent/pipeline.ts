@@ -2,11 +2,13 @@
 // Order of business for every transcript: stop (code), an open question (code, then /api/match),
 // "one / two" (code), a "Narrow by" chip (code), then the one loop (Jev).
 import { INTERIM_STABLE_MS, MAX_STEPS, MAX_UNCLEAR, SAVE_MIN, WARM_EVERY_MS } from '../shared/config';
+import { pageDigest } from '../shared/digest';
 import { unsetGroups, type ControlGroup } from '../shared/groups';
 import { noMatches } from '../shared/notices';
+import { mentionsPrice, pricedCards, wanted, within, type Range } from '../shared/price';
 import { MATCH_SKIP, MATCH_UNCLEAR } from '../shared/questions';
 import { isStop, normalise, pickOneOrTwo, pickYesOrNo } from '../shared/speech';
-import type { ElementRow, MatchResponse } from '../shared/types';
+import type { Constraints, ElementRow, MatchResponse, ParseResponse, VerifyRequest, VerifyResponse } from '../shared/types';
 import { act, confirmationFor, decideOnce, runLoop, type AskResult, type Decision, type Disambiguation, type LoopHooks, type Trace } from './loop';
 import { deletePref, listPrefs, savePref } from './memory';
 import { takeSnapshot } from './snapshot';
@@ -23,6 +25,7 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
   const personal: Record<string, number> = {}; // group key -> the latest personal Noul, to decide what is worth remembering
   let lastWarm = -Infinity;
   const traces: Trace[] = []; // the decision log
+  let constraints: Constraints = {}; // what the LLM parsed from the last task's goal; a refinement builds on it
 
   // The utterance being spoken right now.
   let interimText = '';
@@ -43,6 +46,43 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
       return undefined;
     }
   }
+
+  // ---- M4: the LLM at the edges. Reached only from the task leash, through these two functions. ----
+  const post = async <T>(url: string, body: unknown): Promise<T | undefined> => {
+    try {
+      const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      return res.ok ? ((await res.json()) as T) : undefined;
+    } catch {
+      return undefined; // no server, no key, a timeout: the task carries on without the LLM
+    }
+  };
+  function parseGoal(goal: string) {
+    const { title, categories, filters } = pageDigest(takeSnapshot({ overlay: overlay.host, wide: true }).snapshot);
+    return post<ParseResponse>('/api/parse', { goal, page: { title, categories, filters } });
+  }
+  const verify = (req: VerifyRequest) => post<VerifyResponse>('/api/verify', req);
+
+  // Price is code's job. Cards outside the wanted range are dimmed by the overlay; the page is not touched.
+  const money = (n: number) => `$${n}`;
+  const rangeLabel = (r: Range) =>
+    r.min > 0 && r.max !== Infinity ? `Outside ${money(r.min)} to ${money(r.max)}` : r.max !== Infinity ? `Over ${money(r.max)}` : `Under ${money(r.min)}`;
+  function refreshDim() {
+    const want = wanted(constraints);
+    if (!want) return overlay.dim([], '');
+    const snap = takeSnapshot({ overlay: overlay.host, wide: true });
+    const outside = pricedCards(snap.snapshot)
+      .filter((c) => c.price !== undefined && !within(c.price, want))
+      .map((c) => snap.nodes.get(c.row.id))
+      .filter((el): el is Element => !!el);
+    overlay.dim(outside, rangeLabel(want));
+  }
+  // The list can change under us (the user filters by hand, "Load more"): keep the dimming current.
+  let dimTimer: ReturnType<typeof setTimeout>;
+  new MutationObserver((records) => {
+    if (!wanted(constraints) || records.every((r) => r.target === overlay.host)) return;
+    clearTimeout(dimTimer);
+    dimTimer = setTimeout(refreshDim, 250);
+  }).observe(document.documentElement, { subtree: true, childList: true });
 
   // The question card. The page writes the question: the group's own label and option names.
   function ask(group: ControlGroup, _reason: string): Promise<AskResult> {
@@ -86,6 +126,7 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
     onRing: overlay.ring,
     onStep: (trace) => {
       traces.push(trace);
+      if (trace.leash === 'task') refreshDim();
       for (const [key, parts] of Object.entries(trace.response?.needsParts ?? {})) personal[key] = parts.personal;
       overlay.showTrace(trace);
     },
@@ -95,6 +136,13 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
     savePref: (label, value) => { savePref(label, value); showMemory(); },
     ask,
     matchOption,
+    parseGoal,
+    verify,
+    // Thinking: the glow dims and breathes while the LLM is in flight. If it never answered, fall back to the
+    // M3 behaviour, where the frame appears only when a second step begins.
+    onThinking: (on, llmAnswered) => overlay.setMode(on ? 'thinking' : llmAnswered ? 'agent' : 'user'),
+    lastConstraints: () => constraints,
+    setConstraints: (c) => { constraints = c; refreshDim(); },
   };
 
   // An idle connection to Jev closes after a few seconds. Open it while the user is still talking or typing.
@@ -152,7 +200,8 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
   async function runTask(goal: string, heard: Trace['heard']): Promise<Trace> {
     overlay.narrow(undefined);
     narrow = [];
-    overlay.showStatus(goal, 'ok');
+    overlay.showStatus('On it', 'ok');
+    getVoice().speak('On it');
     const trace = await runLoop({ goal, leash: 'task', maxSteps: MAX_STEPS, heard, signal: abort!.signal }, hooks);
     handBack(trace);
     return trace;
@@ -163,6 +212,15 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
     overlay.setMode('user');
     if (trace.result === 'stopped') return overlay.showStatus('Stopped. Your turn.', 'ok');
     if (trace.result === 'yours') { getVoice().speak("This one's yours."); return overlay.showStatus("This one's yours.", 'ok'); }
+    refreshDim();
+    // M4: the LLM's spoken summary, when it answered. Counts in it were computed in code.
+    if (trace.result === 'done' && trace.verdict?.spoken) {
+      const text = `${trace.verdict.spoken} Your turn.`;
+      getVoice().speak(text);
+      overlay.showStatus(text, trace.verdict.ok ? 'ok' : 'unsure');
+      if (trace.verdict.ok) { narrow = unsetGroups(takeSnapshot({ overlay: overlay.host }).snapshot); overlay.narrow(narrow.map((g) => g.label), (i) => void narrowBy(narrow[i]!)); }
+      return;
+    }
     // Code reads the page's own result notice: an empty list is worth saying out loud.
     const page = takeSnapshot({ overlay: overlay.host }).snapshot;
     const empty = noMatches(page.notices);
@@ -264,6 +322,9 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
     abort = new AbortController();
     overlay.setBusy(text);
     try {
+      // Price is code's job, routing included: a price limit goes straight to the task path. On the single
+      // leash Jev would pick a range by feel.
+      if (mentionsPrice(text)) { dropSpec(); return await runTask(text, heard); }
       // Drive mode: the same loop as delegate mode, on a leash of one step.
       let trace = await runLoop({ utterance: text, leash: 'single', maxSteps: 1, heard, prepared, specMissed, signal: abort.signal }, hooks);
       if (trace.result === 'task' && trace.resolution?.type === 'StartTask') trace = await runTask(trace.resolution.goal, heard);
@@ -300,9 +361,10 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
       lastInterimAt = performance.now();
       clearTimeout(stableTimer);
       // Speculative decide: the transcript has stopped changing, so ask Jev now and keep the answer for the
-      // final transcript. Not while the agent drives, a question is open, or the reply is "one" / "two".
+      // final transcript. Not while the agent drives, a question is open, the reply is "one" / "two", or the
+      // words set a price limit (that goes to the task path, not to Jev).
       stableTimer = setTimeout(() => {
-        if (busy || question || (pending && pickOneOrTwo(text) !== undefined)) return;
+        if (busy || question || mentionsPrice(text) || (pending && pickOneOrTwo(text) !== undefined)) return;
         spec?.controller.abort();
         const controller = new AbortController();
         spec = { text, controller, promise: decideOnce({ utterance: text, leash: 'single', history: [] }, hooks, controller.signal) };

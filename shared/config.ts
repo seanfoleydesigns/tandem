@@ -40,6 +40,10 @@ export const MAX_SPANS = 200; // typed_span candidates, longest first (hard API 
 export const DECIDE_TIMEOUT_MS = 2500;
 export const DECIDE_RETRIES = { single: 0, task: 1 } as const;
 
+// The LLM at the edges (M4). It may fail or time out at any moment; the task carries on without it.
+export const LLM_TIMEOUT_MS = 4000;
+export const SPOKEN_MAX_WORDS = 20;
+
 // Voice
 export const INTERIM_STABLE_MS = 300; // fire a speculative decide when an interim transcript has not changed for this long
 export const ECHO_GUARD_MS = 250; // keep recognition paused this long after the agent stops speaking

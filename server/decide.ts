@@ -57,6 +57,9 @@ export async function decide(req: DecideRequest): Promise<DecideResponse> {
     ? {
         goal: req.goal ?? '',
         constraints: req.constraints ?? {},
+        // Price is code's job: the price group is not among the rows, and DONE must not wait for it.
+        ...(req.constraints?.max_price !== undefined || req.constraints?.min_price !== undefined
+          ? { handled_by_code: ['The price limit is applied by the assistant outside the page. There is no price filter to set.'] } : {}),
         prefs: req.prefs.map((p) => ({ label: p.label, value: p.value })),
         history: req.history,
         snapshot: page,

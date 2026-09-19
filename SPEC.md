@@ -27,7 +27,7 @@ A voice-driven layer that sits on top of a web page and shares control of it wit
 |---|---|---|
 | Every moment-to-moment decision: what kind of utterance, which operation, which element, whether to ask, which option matches a spoken answer | **Jev** (TypeSafe System One model) | One request per decision cycle, all questions in parallel |
 | Arithmetic, counting, ordinals, dates, price comparison, loop detection, safety rules, "stop" | **Code** | Never ask a model what code can compute |
-| Parse a fuzzy request into constraints at task start; verify and summarise at task end | **LLM** (M4) | Never between the user's voice and an action |
+| Parse a fuzzy request into constraints at task start; verify and summarise at task end | **LLM** (M4) | Never between the user's voice and an action. Never counts, never compares prices |
 | Look at product photos | **Vision LLM** (M5, stretch) | Background, parallel, cached, shortlist only |
 
 ### Jev: read this before writing any Jev code
@@ -100,7 +100,7 @@ flowchart LR
 CLAUDE.md  SPEC.md  NOTES.md  README.md  .env  .env.example  .gitignore
 docs/jev/            official Jev docs, pasted in by me
 server/
-  index.ts           routes: /api/health, /api/decide, /api/match, (M4) /api/parse, /api/verify
+  index.ts           routes: /api/health, /api/warm, /api/decide, /api/fits, /api/match, /api/slate, (M4) /api/parse, /api/verify
   jev.ts             SDK client; builds questions from shared/questions.ts
   llm.ts             (M4) parseGoal, verifyAndSummarise behind a provider-agnostic interface
 shared/
@@ -108,6 +108,8 @@ shared/
   questions.ts       ALL Jev wording
   policy.ts          pure functions: thresholds, ambiguity rule, deny-list, loop detection
   config.ts          thresholds and caps
+  price.ts           (M4) price is code's job: ranges, card prices, counts, routing, the no-LLM fallback
+  digest.ts          (M4) the small page digest the LLM sees
 agent/
   index.ts           boot; mount overlay
   snapshot.ts        DOM to element table; id to node map; groups; ordinals
@@ -259,6 +261,22 @@ runLoop({ goal | utterance, leash }):
 
 **Typing without an LLM.** Jev can't write, so in drive mode the text to type must come from the user's own words. Generate every contiguous word span of the utterance in code (200 at most, deduplicated, longest first; 200 covers any utterance of up to 19 words and stays clear of the 255-label cap) and let the `typed_span` head choose one. If overlapping spans split the probability badly, the fallback is two heads, the **first word** and the **last word** of the text to type, each label described with its neighbouring words for context; code joins the words between them. In task mode, text comes from `constraints.search_query` (M4) or from a saved preference. Whether text is available is computable, so code decides: when neither source exists, TYPE is not offered as an operation on the task leash (the chips-only question card cannot ask for free text).
 
+**The LLM at the edges (M4).** Two calls per task, none in drive mode. Both live in `server/llm.ts`, the only file that knows the provider; the model id is read there once, from `LLM_MODEL` (verified against the provider: `claude-haiku-4-5-20251001`). Each call has a 4 s timeout, no retries, zod-validated structured output, and always answers 200 with `llm.ok` false when the key is missing, the call times out, or the provider refuses. The key never leaves the server and is never logged.
+
+- *Parse, at task start.* `/api/parse` gets the goal and a small digest of the page (title, categories, filter groups) and returns `Constraints`. It runs in parallel with the clean-slate check. The agent says "On it" and the frame shows *thinking* while it is in flight. A refinement keeps the last task's constraints and overrides what it restates. The constraints travel in every task-leash decide request.
+- *Verify and summarise, at DONE.* `/api/verify` gets the goal, the constraints, the page digest, and **counts computed in code** (`shown`, `priced`, `within_price`). The LLM must not count. It returns `{ ok, issues[], spoken }`; `spoken` is 20 words or fewer (longer is dropped in code) and is said before "Your turn." If `ok` is false the agent hands back and says what is off. Results outside a price limit are not an issue, because the overlay dims them; `within_price: 0` is.
+- *Guarantee.* Nothing in drive mode calls the LLM. `tests/no-llm-in-drive.test.ts` runs the real loop on both leashes with the network mocked and fails if the single leash reaches `/api/parse`, `/api/verify` or either hook; it also checks that only `server/llm.ts` imports the SDK and only those two routes use it.
+- *Without the LLM* (no key, a timeout) everything from M3 still works: no constraints, no spoken summary, and the hand-back is the plain "Your turn."
+
+**Price is code's job, not Jev's (M4).** Jev cannot compare numbers, so it never sees a price decision:
+
+- Code parses the numbers in the price group's option labels (`shared/price.ts`). It selects a price option **only when its range matches the constraint exactly**. Otherwise it leaves the price filter alone, sorts by price ascending once if a sort control offers it, parses the card prices, and the overlay dims the cards outside the range (a veil over the card and a small tag, e.g. "Over $100"; the page itself is not touched). Dimming is kept current as the list changes.
+- A price option left over from before that does not match the constraint is taken back in code, by choosing the group's neutral option ("Any price") when the page has one. An option named "Any…" or "All…" never counts as set, in any group. Result cards are the rows with an ordinal plus any link that shows a price, so a list of one still counts.
+- Jev is **never offered the price group while a price constraint exists**, on either leash. On the task leash the state also carries `handled_by_code`, so Jev neither looks for a price control nor waits for one before DONE.
+- Routing a price is code's job too. An utterance that sets a price limit (`mentionsPrice`: a currency word or symbol, or a comparison word followed by a number) skips the single leash and goes straight to the task path, where the LLM reads the number. Found the hard way: "only the ones under a hundred and fifty" was routed ACTION and Jev chose "$75 to $125".
+- If the LLM is unavailable, code reads the limit itself (`priceLimit`: digits and plain number words, "under", "over", "between"), so a price still never falls to Jev.
+- Constraints live in memory for the page's lifetime. A full page load forgets them (the demo store navigates without reloading).
+
 ## 9. Asking, answers, and memory
 
 - **The page writes the question.** The card title is the group label; the chips are the group's option names (or the `<select>` options). The agent says "Which {label}?". Nothing is generated.
@@ -329,7 +347,8 @@ Work in order. One milestone at a time. Each ends with its acceptance checks run
 
 **Cut line: if M3 is not accepted by 2 h 30 min, skip M4 and wrap.**
 
-**M4 · LLM at the edges (30 min, only if on schedule).** `/api/parse` turns the goal into `Constraints { category?, colour?, max_price?, min_price?, search_query?, visual_prefs?[] }` as strict JSON, validated with zod, with a 4 s timeout and graceful fallback to no constraints. The agent says "On it" while parsing. Price logic lives in code: parse numbers out of option labels and card prices. `/api/verify` checks the final page digest against the constraints and returns a spoken summary of 20 words or fewer. "Thinking" state in the frame.
+**M4 · LLM at the edges (30 min, only if on schedule).** `/api/parse` turns the goal into `Constraints { category?, colour?, max_price?, min_price?, search_query?, visual_prefs?[] }` as strict JSON, validated with zod, with a 4 s timeout and graceful fallback to no constraints; it runs in parallel with the clean-slate check. The agent says "On it" while parsing. Price logic lives in code (§8): numbers parsed out of option labels and card prices, an option selected only on an exact match, otherwise sort ascending and dim the cards outside the range; Jev is never offered the price group when a price constraint exists. `/api/verify` checks the final page digest and code-computed counts against the constraints and returns `{ ok, issues[], spoken }` with a spoken summary of 20 words or fewer. "Thinking" state in the frame. The inspector shows LLM latency and tokens next to Jev's.
+*Accept:* "find me white sneakers under a hundred dollars" ends on Sneakers, White and the saved size, with cards over $100 dimmed and a spoken summary with correct counts; "only the ones under a hundred and fifty" as a refinement keeps the filters and re-dims; drive-mode timings unchanged from M2 and no LLM request in drive mode (a test fails if there is one); with the key removed, the M3 hero scenario still passes.
 *Accept:* "white sneakers under a hundred dollars" ends with every visible result at $100 or less and a spoken summary; with the LLM key removed, everything from M3 still works.
 
 **M5 · Stretch, in this order.** (a) `?gym=hard` passes the hero scenario. (b) Eyes: a background vision pass over shortlist images returns typed attributes (dominant colour, closure, logo: none, small, large), cached by URL; the overlay dims cards that fail `visual_prefs`. (c) Inject `dist/agent.js` into one real shop, and record honestly where it breaks.

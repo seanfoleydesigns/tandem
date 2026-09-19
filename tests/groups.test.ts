@@ -18,3 +18,11 @@ describe('control groups', () => {
   it('knows which groups are still unset', () => expect(unsetGroups(s).map((g) => g.key)).toEqual(['size']));
   it('treats "Size (required)" and "size" as the same label', () => expect(labelKey('Size (required)')).toBe(labelKey(' size: ')));
 });
+
+describe('a neutral option ("Any price") means the group is not set', () => {
+  const price = (any: string, under: string) => snap([
+    row('e1', 'radio', 'Any price', 'Price', any), row('e2', 'radio', 'Under $75', 'Price', under), row('e3', 'radio', '$75 to $125', 'Price', 'unchecked'),
+  ]);
+  it('chosen, it leaves the group unset', () => expect(unsetGroups(price('checked', 'unchecked')).map((g) => g.label)).toEqual(['Price']));
+  it('a real option chosen sets the group', () => expect(unsetGroups(price('unchecked', 'checked'))).toEqual([]));
+});

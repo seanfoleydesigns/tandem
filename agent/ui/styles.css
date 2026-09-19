@@ -130,6 +130,12 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .ring.on { opacity: 1; transform: scale(1.06); transition: none; }
 
+/* ---- veils: result cards outside the wanted price range (M4) --------------------------------------
+   Lower contrast and no colour, so it reads as "set aside" on a light or a dark page. The card stays clickable,
+   and a small tag says why in words. */
+.veil { position: fixed; pointer-events: none; background: rgba(127, 127, 127, 0.22); -webkit-backdrop-filter: grayscale(1) contrast(0.45); backdrop-filter: grayscale(1) contrast(0.45); }
+.veil span { position: absolute; top: 8px; left: 8px; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; color: var(--t-text); background: var(--t-material-solid); border: 0.5px solid var(--t-hairline); }
+
 /* ---- badges -------------------------------------------------------------------------------------- */
 .badge {
   position: fixed; width: 28px; height: 28px; border-radius: 50%; background: var(--t-you); color: var(--t-on-you);
@@ -278,5 +284,6 @@ button:disabled { opacity: 0.5; cursor: default; }
   .frame.agent::before, .frame.thinking::before { background: none; -webkit-mask: none; mask: none; border: 4px solid Highlight; animation: none; }
   .frame.waiting::before { border-color: CanvasText; }
   .ring { border-color: Highlight; }
+  .veil { border: 2px dashed CanvasText; }
   .chip[aria-checked='true'] { background: Highlight; color: HighlightText; }
 }

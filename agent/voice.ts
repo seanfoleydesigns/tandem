@@ -30,6 +30,7 @@ export function createVoice(h: VoiceHandlers) {
   let wantOn = false; // the user's mic toggle
   let guard = false; // echo guard: the agent is speaking, or stopped less than 250 ms ago
   let muted = false;
+  let speaking = 0; // phrases queued or being spoken; the guard lifts only when this reaches zero
   let restartDelay = 250;
 
   function start() {
@@ -84,11 +85,14 @@ export function createVoice(h: VoiceHandlers) {
     speak(text: string) {
       if (muted || !('speechSynthesis' in window)) return;
       setGuard(true);
+      speaking += 1;
       let released = false;
       const release = () => {
         if (released) return;
         released = true;
-        setTimeout(() => setGuard(false), ECHO_GUARD_MS);
+        speaking -= 1;
+        // "On it" and "Which size?" can queue back to back: never lift the guard between them.
+        setTimeout(() => { if (speaking === 0) setGuard(false); }, ECHO_GUARD_MS);
       };
       const u = new SpeechSynthesisUtterance(text);
       u.rate = 1.05;

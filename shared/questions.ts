@@ -180,7 +180,8 @@ export function operationQuestionTask(): ChoiceQuestion {
   return {
     type: 'choice',
     instructions: askTask(
-      'Choose the single next operation that moves the page toward `goal`, given `constraints`, `prefs`, `history`, and the visible elements in `snapshot.rows`.',
+      'Choose the single next operation that moves the page toward `goal`, given `constraints`, `prefs`, `history`, and the visible elements in `snapshot.rows`. ' +
+        'If `handled_by_code` is present, it lists parts of `goal` that the assistant already takes care of outside the page: ignore those parts when choosing, and do not wait for them before DONE.',
     ),
     criteria: {
       CLICK:

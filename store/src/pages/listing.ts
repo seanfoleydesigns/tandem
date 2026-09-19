@@ -46,7 +46,7 @@ export function renderListing(main: HTMLElement) {
         ${radios('Size', 'size', SIZES.map((s) => ({ id: s, label: s })), filters.size, true)}
         ${checks('Brand', 'brand', BRANDS, filters.brand)}
         ${checks('Closure', 'closure', CLOSURES, filters.closure)}
-        ${radios('Price', 'price', PRICE_RANGES, filters.price)}
+        ${radios('Price', 'price', [{ id: '', label: 'Any price' }, ...PRICE_RANGES], filters.price)}
         <button type="button" id="clear-filters">Clear all filters</button>
       </form>
       <section class="results" aria-labelledby="results-heading">

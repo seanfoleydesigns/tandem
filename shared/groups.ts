@@ -12,7 +12,9 @@ export const cleanLabel = (s: string) => s.replace(/\([^)]*\)/g, ' ').replace(/[
 
 export type ControlGroup = { label: string; key: string; rows: ElementRow[]; set: boolean };
 
-const isChosen = (row: ElementRow) => /(^|, )(checked|selected)($|,)/.test(row.state ?? '');
+// "Any price", "All brands": the option that means no filter. Chosen, it leaves the group unset.
+export const isNeutral = (row: ElementRow) => /^(any|all)\b/i.test(row.name);
+export const isChosen = (row: ElementRow) => /(^|, )(checked|selected)($|,)/.test(row.state ?? '') && !isNeutral(row);
 
 export function controlGroups(snapshot: Snapshot): ControlGroup[] {
   const byKey = new Map<string, ControlGroup>();

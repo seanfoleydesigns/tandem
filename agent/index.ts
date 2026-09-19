@@ -35,6 +35,7 @@ if (import.meta.env.DEV) {
     finalToActionMs: t.t3 === undefined ? undefined : Math.round(t.t3 - t.heard.final),
     lastInterimToActionMs: t.t3 === undefined || t.heard.lastInterim === undefined ? undefined : Math.round(t.t3 - t.heard.lastInterim),
     jevMs: t.response?.ms, kind: t.response?.heads.kind,
+    leash: t.leash, step: t.step, constraints: t.constraints, llm: t.llm, verdict: t.verdict,
   };
   (window as unknown as { __tandem: unknown }).__tandem = {
     async say(text: string, opts: SayOptions = {}) {

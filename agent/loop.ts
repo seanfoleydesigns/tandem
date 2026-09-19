@@ -3,12 +3,15 @@
 import { candidates, groupsByLabel, rowLine, type Candidates } from '../shared/candidates';
 import { MAX_TASK_MS, type LabelStyle } from '../shared/config';
 import { fitPool, rankFits } from '../shared/fits';
-import { cleanLabel, controlGroups, labelKey, unsetGroups, type ControlGroup } from '../shared/groups';
+import { pageDigest } from '../shared/digest';
+import { cleanLabel, controlGroups, isChosen, isNeutral, labelKey, unsetGroups, type ControlGroup } from '../shared/groups';
 import { denied, resolve, type Resolution, type Why } from '../shared/policy';
+import { countResults, exactOption, parseRange, priceGroup, priceLimit, sortAscending, wanted, withoutPriceGroup } from '../shared/price';
 import { planSlate, setOptions } from '../shared/slate';
 import { normalise } from '../shared/speech';
 import type {
-  ActionRecord, ApiError, DecideRequest, DecideResponse, ElementRow, FitsResponse, Leash, Operation, Preference, SlateResponse,
+  ActionRecord, ApiError, Constraints, DecideRequest, DecideResponse, ElementRow, FitsResponse, Leash, LlmCall, Operation,
+  ParseResponse, Preference, SlateResponse, VerifyRequest, VerifyResponse,
 } from '../shared/types';
 import * as exec from './execute';
 import { takeSnapshot, type Snap } from './snapshot';
@@ -52,6 +55,9 @@ export type Trace = {
   confirm?: { op: Operation; option: Option; name: string }; // drive mode: a deny-listed target waits for an explicit yes
   why?: Why; // why nothing was done, so the agent is never silent
   fit?: { ms: number; asked: number; fits: { line: string; noul: number }[] }; // the follow-up fit check, when one ran
+  constraints?: Constraints; // task leash: what the LLM parsed from the goal (M4)
+  llm?: { parse?: LlmCall; verify?: LlmCall }; // LLM latency and tokens, next to Jev's
+  verdict?: { ok: boolean; issues: string[]; spoken: string };
   rowNames: Map<string, string>;
   result: 'acted' | 'ignored' | 'asked' | 'confirm' | 'task' | 'done' | 'stuck' | 'yours' | 'stopped' | 'failed' | 'error';
   note: string;
@@ -72,29 +78,37 @@ export type LoopHooks = {
   savePref: (label: string, value: string) => void;
   ask: (group: ControlGroup, reason: string) => Promise<AskResult>;
   matchOption: (group: string, options: string[], answer: string) => Promise<string | undefined>; // /api/match
+  // M4, task leash only. Nothing in drive mode calls these (tests/no-llm-in-drive.test.ts).
+  parseGoal: (goal: string) => Promise<ParseResponse | undefined>; // /api/parse; undefined when unreachable
+  verify: (req: VerifyRequest) => Promise<VerifyResponse | undefined>; // /api/verify
+  onThinking: (on: boolean, llmAnswered?: boolean) => void;
+  lastConstraints: () => Constraints;
+  setConstraints: (c: Constraints) => void;
 };
 
 const driveHistory: ActionRecord[] = [];
 const describeTarget = (row?: ElementRow) => (row ? [row.role, row.name, row.group].filter(Boolean).join(' · ') : undefined);
 
 export async function decideOnce(
-  input: { utterance?: string; goal?: string; leash: Leash; history: ActionRecord[]; asked?: string[]; prefs?: Preference[] },
-  hooks: Pick<LoopHooks, 'overlay' | 'labelStyle' | 'pageFocus'>, signal?: AbortSignal, taken?: Snap,
+  input: { utterance?: string; goal?: string; leash: Leash; history: ActionRecord[]; asked?: string[]; prefs?: Preference[]; constraints?: Constraints },
+  hooks: Pick<LoopHooks, 'overlay' | 'labelStyle' | 'pageFocus' | 'lastConstraints'>, signal?: AbortSignal, taken?: Snap,
 ): Promise<Decision> {
   const snap = taken ?? takeSnapshot({ overlay: hooks.overlay, focused: hooks.pageFocus() });
-  const cands = candidates(snap.snapshot);
+  // Price is code's job: while a price constraint exists, Jev is never offered the price group, on either leash.
+  const offered = withoutPriceGroup(snap.snapshot, controlGroups(snap.snapshot), input.constraints ?? hooks.lastConstraints());
+  const cands = candidates(offered);
   const decision: Decision = {
     utterance: input.utterance ?? input.goal ?? '', snap, cands,
-    rowsById: new Map(snap.snapshot.rows.map((r) => [r.id, r])),
+    rowsById: new Map(offered.rows.map((r) => [r.id, r])),
     rowNames: new Map<string, string>([
-      ...snap.snapshot.rows.map((r) => [r.id, `${r.role} ${r.name}`.slice(0, 36)] as [string, string]),
+      ...offered.rows.map((r) => [r.id, `${r.role} ${r.name}`.slice(0, 36)] as [string, string]),
       ...cands.select.map((s) => [s.label, s.optionLabel.slice(0, 36)] as [string, string]),
     ]),
     t1: performance.now(), t2: 0,
   };
   const body: DecideRequest = {
     leash: input.leash, utterance: input.utterance, goal: input.goal, prefs: input.prefs ?? [],
-    history: input.history.slice(-6), snapshot: snap.snapshot, asked: input.asked, labelStyle: hooks.labelStyle(),
+    history: input.history.slice(-6), snapshot: offered, asked: input.asked, constraints: input.constraints, labelStyle: hooks.labelStyle(),
   };
   try {
     const res = await fetch('/api/decide', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal });
@@ -177,8 +191,27 @@ export async function runLoop(
   let trace!: Trace;
   const end = (result: Trace['result'], note?: string, why?: Why): Trace => { trace = { ...trace, result, note: note ?? trace.note, why }; hooks.onStep(trace); return trace; };
 
-  // A new search starts from a clean slate; a refinement keeps what is there.
-  const cleared = task ? await cleanSlate(input.goal ?? '', hooks, history, input.signal) : 0;
+  // Task start, two things at once: Jev checks for a clean slate, and the LLM parses the goal into
+  // constraints. The LLM is only ever reached on the task leash: here, and at DONE below.
+  let constraints: Constraints = {};
+  let llm: Trace['llm'];
+  let cleared = 0;
+  if (task) {
+    hooks.onThinking(true);
+    const [slate, parsed] = await Promise.all([
+      cleanSlate(input.goal ?? '', hooks, history, input.signal),
+      hooks.parseGoal(input.goal ?? ''),
+    ]);
+    cleared = slate.cleared;
+    // With the LLM away (no key, a timeout), code reads the price limit itself, so a price never falls to Jev.
+    const stated = parsed?.llm.ok ? parsed.constraints : priceLimit(input.goal ?? '') ?? {};
+    // A refinement adjusts the last search, so it keeps the constraints it does not restate.
+    constraints = slate.refinement ? { ...hooks.lastConstraints(), ...stated } : stated;
+    llm = { parse: parsed?.llm };
+    hooks.setConstraints(constraints);
+    hooks.onThinking(false, !!parsed?.llm.ok);
+  }
+  let sortTried = false;
 
   for (let step = 0; step < input.maxSteps; step++) {
     if (step === 1 || (step === 0 && cleared)) hooks.onDriving(); // the frame appears only when a second step begins
@@ -186,13 +219,14 @@ export async function runLoop(
     trace = {
       utterance: said, leash: input.leash, step, heard: input.heard, speculative: 'none', rows: snap.snapshot.rows.length,
       snapshotMs: snap.ms, t1: performance.now(), t2: performance.now(), rowNames: new Map(), result: 'error', note: '',
+      ...(task ? { constraints, llm } : {}),
     };
     if (input.signal?.aborted) return end('stopped', 'stopped before acting');
     if (task && performance.now() - started - waited > MAX_TASK_MS) return end('stuck', `the task ran past ${MAX_TASK_MS / 1000} s`);
 
-    // Saved preferences are applied in code, before Jev is asked for the next operation.
+    // Saved preferences, then price: both are applied in code, before Jev is asked for the next operation.
     if (task) {
-      const applied = await applyMemory(snap, hooks, history, memoryTried);
+      const applied = (await applyMemory(snap, hooks, history, memoryTried)) ?? (await applyPrice(snap, constraints, hooks, history, sortTried, () => { sortTried = true; }));
       if (applied) { trace = { ...trace, t3: applied.t3, settleMs: applied.settleMs, winner: applied.line, result: 'acted', note: applied.note }; hooks.onStep(trace); continue; }
     }
 
@@ -200,7 +234,7 @@ export async function runLoop(
     let decision = step === 0 && input.prepared ? await input.prepared : undefined;
     const speculative = step !== 0 ? 'none' : input.prepared ? (decision?.response ? 'hit' : 'miss') : input.specMissed ? 'miss' : 'none';
     if (!decision?.response) {
-      decision = await decideOnce({ utterance: input.utterance, goal: input.goal, leash: input.leash, history, asked, prefs: task ? hooks.prefs() : [] }, hooks, input.signal, snap);
+      decision = await decideOnce({ utterance: input.utterance, goal: input.goal, leash: input.leash, history, asked, prefs: task ? hooks.prefs() : [], constraints: task ? constraints : undefined }, hooks, input.signal, snap);
     }
     const { cands, rowsById, response } = decision;
     const nodes = decision.snap.nodes;
@@ -284,6 +318,16 @@ export async function runLoop(
     }
 
     if (next.type === 'StartTask') return end('task');
+    if (next.type === 'HandBack' && next.outcome === 'done' && task) {
+      // Task end: the LLM checks the page against the goal and writes the spoken summary. Counts come from code.
+      hooks.onThinking(true);
+      const wide = takeSnapshot({ overlay: hooks.overlay, wide: true }).snapshot;
+      const verdict = await hooks.verify({ goal: input.goal ?? '', constraints, page: pageDigest(wide), counts: countResults(wide, wanted(constraints)) });
+      hooks.onThinking(false, !!verdict?.llm.ok);
+      trace.llm = { ...trace.llm, verify: verdict?.llm };
+      if (verdict?.llm.ok) trace.verdict = { ok: verdict.ok, issues: verdict.issues, spoken: verdict.spoken };
+      return end('done');
+    }
     if (next.type === 'HandBack') return end(next.outcome);
     if (next.type === 'Ignore') return end('ignored', undefined, next.why);
     if (next.type === 'Answer') return end('ignored', undefined, 'unsure');
@@ -346,20 +390,20 @@ async function applyMemory(snap: Snap, hooks: LoopHooks, history: ActionRecord[]
 // Clean slate, once at task start. One Jev request: is the goal a refinement, and which of the filter
 // options that are on does it ask for? A new search switches off the rest, except a saved preference.
 // Returns how many filters were cleared.
-async function cleanSlate(goal: string, hooks: LoopHooks, history: ActionRecord[], signal?: AbortSignal): Promise<number> {
+async function cleanSlate(goal: string, hooks: LoopHooks, history: ActionRecord[], signal?: AbortSignal): Promise<{ cleared: number; refinement: boolean }> {
   const snap = takeSnapshot({ overlay: hooks.overlay, wide: true }); // filters may be scrolled out of view
   const set = setOptions(snap.snapshot);
-  if (!set.length) return 0;
+  if (!set.length) return { cleared: 0, refinement: false };
 
   let answers: SlateResponse;
   try {
     const { title, headings, notices } = snap.snapshot;
     const body = { goal, page: { title, headings, notices }, filters: set.map((o) => ({ id: o.id, text: `${o.group}: ${o.option}` })) };
     const res = await fetch('/api/slate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal });
-    if (!res.ok) return 0;
+    if (!res.ok) return { cleared: 0, refinement: false };
     answers = (await res.json()) as SlateResponse;
   } catch {
-    return 0; // without an answer, leave the page as it is
+    return { cleared: 0, refinement: false }; // without an answer, leave the page as it is
   }
 
   const plan = planSlate(set, answers, hooks.prefs());
@@ -374,5 +418,38 @@ async function cleanSlate(goal: string, hooks: LoopHooks, history: ActionRecord[
     hooks.onTrail(`Cleared ${cleared} old filter${cleared === 1 ? '' : 's'}`);
     history.push({ op: 'CLICK', target: `cleared ${cleared} old filters`, outcome: 'changed', ts: Date.now() });
   }
-  return cleared;
+  return { cleared, refinement: plan.refinement };
+}
+
+// Price, in code. Select a price option only when its range matches the constraint exactly; otherwise
+// leave the price filter alone and sort cheapest first if the page can. The overlay dims the rest.
+async function applyPrice(snap: Snap, constraints: Constraints, hooks: LoopHooks, history: ActionRecord[], sortTried: boolean, markSortTried: () => void) {
+  const want = wanted(constraints);
+  if (!want) return undefined;
+  const group = priceGroup(controlGroups(snap.snapshot));
+  const exact = exactOption(group, want);
+  if (exact) {
+    if (/(^|, )checked/.test(exact.state ?? '')) return undefined;
+    const done = await act({ op: 'CLICK', row: exact, el: snap.nodes.get(exact.id) }, hooks, history);
+    if (!done.outcome.ok) return undefined;
+    hooks.onTrail(trailText('CLICK', exact));
+    return { ...done, line: rowLine(exact), note: `price ${exact.name} matches the constraint exactly, chosen in code with no model call` };
+  }
+  // A price option left over from before hides results the new limit allows: take it back if the page offers "Any price".
+  const stale = group?.rows.find((r) => isChosen(r) && parseRange(r.name));
+  const any = stale && group?.rows.find(isNeutral);
+  if (stale && any) {
+    const done = await act({ op: 'CLICK', row: any, el: snap.nodes.get(any.id) }, hooks, history);
+    if (done.outcome.ok) {
+      hooks.onTrail(`Cleared price ${stale.name}`);
+      return { ...done, line: rowLine(any), note: `price ${stale.name} was set but does not match the constraint, cleared in code` };
+    }
+  }
+  const sort = sortAscending(snap.snapshot);
+  if (!sort || sort.already || sortTried) return undefined;
+  markSortTried();
+  const done = await act({ op: 'SELECT', row: sort.row, el: snap.nodes.get(sort.row.id), option: snap.options.get(`${sort.row.id}_${sort.optionId}`) }, hooks, history);
+  if (!done.outcome.ok) return undefined;
+  hooks.onTrail(`Sorted by ${sort.label}`);
+  return { ...done, line: rowLine(sort.row), note: 'no price option matches the constraint exactly, so the filter is left alone and the results are sorted cheapest first, in code' };
 }

@@ -104,3 +104,24 @@ export type MatchResponse = { model: string; ms: number; usage: JevUsage; head: 
 // Clean slate, once at task start: is the goal a refinement, and which set filter options does it ask for?
 export type SlateRequest = { goal: string; page: { title: string; headings: string[]; notices: string[] }; filters: { id: string; text: string }[] };
 export type SlateResponse = { model: string; ms: number; usage: JevUsage; refines: number; namesProduct: number; asks: Record<string, number> };
+
+// --- M4: the LLM at the edges -------------------------------------------------------------------
+// One record per LLM call, shown in the inspector next to Jev's numbers.
+export type LlmCall = { ok: boolean; ms: number; model?: string; input_tokens?: number; output_tokens?: number; error?: string };
+
+export type PageDigest = {
+  title: string;
+  headings: string[];
+  notices: string[];
+  categories: string[]; // navigation links, with the current one marked
+  filters: { group: string; options: string[]; set: string[] }[];
+  results: string[]; // the first few result names
+};
+
+export type ParseRequest = { goal: string; page: Pick<PageDigest, 'title' | 'categories' | 'filters'> };
+export type ParseResponse = { constraints: Constraints; llm: LlmCall };
+
+// Counts are computed in code. The LLM must not count.
+export type ResultCounts = { shown: number; priced: number; within_price?: number };
+export type VerifyRequest = { goal: string; constraints: Constraints; page: PageDigest; counts: ResultCounts };
+export type VerifyResponse = { ok: boolean; issues: string[]; spoken: string; llm: LlmCall };

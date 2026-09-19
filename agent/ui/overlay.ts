@@ -40,6 +40,7 @@ export type Overlay = {
   memory: (prefs: Preference[], onDelete: (label: string) => void) => void;
   showMemory: (open: boolean) => void;
   showInspector: (open: boolean) => void;
+  dim: (els: Element[], label: string) => void; // veil result cards that are outside the wanted price range
 };
 
 const STYLE_KEY = 'tandem.labelStyle';
@@ -79,6 +80,7 @@ export function mountOverlay(events: OverlayEvents, opts: { parent?: HTMLElement
     <style>${css}</style>
     <div class="sr" role="status" aria-live="polite"></div>
     <div class="frame user"></div>
+    <div class="veils" aria-hidden="true"></div>
     <div class="ring"></div>
     <button class="badge" aria-label="Choose one" hidden>1</button>
     <button class="badge" aria-label="Choose two" hidden>2</button>
@@ -202,8 +204,20 @@ export function mountOverlay(events: OverlayEvents, opts: { parent?: HTMLElement
       Object.assign(badgeEls[i]!.style, { left: `${Math.max(4, r.left - o.left - 10)}px`, top: `${Math.max(4, r.top - o.top - 10)}px` });
     });
   };
-  window.addEventListener('scroll', place, { passive: true });
-  window.addEventListener('resize', place);
+  // Veils follow the cards they dim. The page itself is never touched.
+  let dimmed: Element[] = [];
+  const placeVeils = () => {
+    const o = origin();
+    const veils = [...root.querySelectorAll<HTMLElement>('.veil')];
+    dimmed.forEach((el, i) => {
+      const r = el.getBoundingClientRect();
+      const veil = veils[i]!;
+      veil.hidden = !el.isConnected || (r.width === 0 && r.height === 0);
+      Object.assign(veil.style, { left: `${r.left - o.left}px`, top: `${r.top - o.top}px`, width: `${r.width}px`, height: `${r.height}px`, borderRadius: getComputedStyle(el).borderTopLeftRadius });
+    });
+  };
+  window.addEventListener('scroll', () => { place(); placeVeils(); }, { passive: true });
+  window.addEventListener('resize', () => { place(); placeVeils(); });
   badgeEls.forEach((b, i) => b.addEventListener('click', () => onTap?.(i as 0 | 1)));
 
   const trailItems: { text: string; tone?: string }[] = [];
@@ -327,5 +341,11 @@ export function mountOverlay(events: OverlayEvents, opts: { parent?: HTMLElement
     },
     showMemory,
     showInspector(open) { inspector.hidden = !open; draw(); },
+    dim(els, label) {
+      dimmed = els;
+      $('.veils').innerHTML = els.map(() => `<div class="veil"><span>${esc(label)}</span></div>`).join('');
+      placeVeils();
+      if (els.length) announce(`${els.length} result${els.length === 1 ? '' : 's'} dimmed: ${label.toLowerCase()}.`);
+    },
   };
 }

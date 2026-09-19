@@ -309,3 +309,51 @@ Started 15:22, finished 15:32 EDT (about 10 min). No behaviour changes: `agent/u
 **Not verified here**
 
 - The Browser pane I test in follows a dark system scheme and has no microphone, so the live waveform and the light scheme on the real store were reviewed only in the gallery. Reduced motion, reduced transparency, increased contrast and forced colours are written to the spec but I could not switch those settings on in this browser; they need a look in Chrome's rendering emulation.
+
+## 2026-09-19 · M4: LLM at the edges
+
+**Start 15:43 · End 16:10**
+
+**Built**
+
+- `server/llm.ts`: the only file that knows the provider. `parseGoal` and `verifyAndSummarise` through `@anthropic-ai/sdk` 0.127 (`messages.parse` with a zod output format), 4 s timeout, no retries, typed errors, refusal check. It always answers; on any failure `llm.ok` is false and the caller carries on. The model id is read once, from `LLM_MODEL`. I checked it against the provider before using it: `models.retrieve('claude-haiku-4-5-20251001')` answers "Claude Haiku 4.5". The key is never logged; the log line is model, ms, tokens, stop reason.
+- `/api/parse` at task start, in parallel with the clean-slate check. The agent says "On it", the frame dims and breathes (thinking). A refinement keeps the last constraints and overrides what it restates. Constraints travel in every task-leash decide request.
+- `/api/verify` at DONE: goal, constraints, a page digest (`shared/digest.ts`) and counts computed in code (`shown`, `priced`, `within_price`). Returns `{ ok, issues, spoken }`; `spoken` over 20 words is dropped in code. The hand-back says it before "Your turn."
+- `shared/price.ts`, price is code's job: parse the ranges in the option labels, select an option only on an exact match, otherwise sort ascending once and dim the cards outside the range (`overlay.dim`: a veil and a small tag, page untouched, kept current by a debounced observer). Jev is never offered the price group while a price constraint exists, on either leash, and the task state carries `handled_by_code` so Jev does not wait for a price control before DONE.
+- Inspector: "LLM parse (task start)" and "LLM verify (task end)" rows with ms, tokens in and out and the model, next to Jev's ms and tokens; plus constraints and verdict.
+- `tests/no-llm-in-drive.test.ts`: runs the real loop on both leashes with the network mocked. It fails if the single leash reaches `/api/parse`, `/api/verify` or either hook, if any server file but `llm.ts` imports the SDK, or if any route but those two uses it. The task-leash case proves the test would notice a leak.
+
+**Acceptance (simulator, real Jev and real LLM)**
+
+| Check | Result |
+|---|---|
+| "find me white sneakers under a hundred dollars" | Pass. Sneakers, White, saved size 10.5, sorted cheapest first; cards $72 $89 $95 $110, the $110 one dimmed "Over $100"; spoken "Four white sneakers found, three under a hundred dollars. Your turn." About 4 to 6 s end to end. |
+| "only the ones under a hundred and fifty" as a refinement | Failed at first, passes now (see below). Filters kept, constraints became Sneakers, White, max 150, nothing dimmed, "Four white sneakers in your size, all under a hundred fifty dollars." About 2 s. Also tried: under ninety (2 dimmed), under sixty (`ok` false, "No white sneakers in your size are under sixty dollars…"), back to a hundred (1 dimmed). |
+| Drive-mode timings unchanged from M2 | Pass. Six commands with interims and a 610 ms finalisation delay: all speculative hits, final to action 1 to 3 ms, last interim to action 613 to 628 ms, Jev 162 to 208 ms. Requests made: `/api/warm` and `/api/decide` only. |
+| Key removed: M3 hero still passes | Pass. Server started with the key blanked by an environment override (`.env` untouched): "find me white sneakers" ends on Sneakers, White, 10.5 in 1.5 s, hand-back "Your turn." Timeout path checked separately against an unroutable address: gives up at 4.0 s with `ok` false. |
+
+**What broke**
+
+- **The refinement went to Jev, and Jev picked a price.** "only the ones under a hundred and fifty" was routed `kind: ACTION`, so no parse ran, the single leash still offered the price group, and Jev clicked "$75 to $125" (which hid the $72 shoe). Same lesson as M3.1: Jev cannot compare numbers. This time the fix is not wording, because the right answer is that Jev should never be asked: (1) routing a price is code's job, `mentionsPrice` sends an utterance with a price limit straight to the task path, and no speculative decide is fired for it; (2) the price group is hidden from Jev on the single leash too while a price constraint is held. No LLM call was added to drive mode; the guarantee test still passes.
+- **Without the LLM, a price request fell back to Jev** and it chose "Under $75" for "under a hundred dollars", then got stuck. A timeout would do the same. Code now reads the limit itself when the LLM does not answer (`priceLimit`: digits and plain number words, under / over / between). With the key removed the priced hero now lands correctly in 1.3 s, with the dimming but without a spoken summary.
+- **Verify flagged the dimming as a problem.** With 2 of 4 within the limit it said `ok: false`, "Need to filter by price", though with 3 of 4 it was happy. The prompt now says plainly that a price limit is never a page filter, that dimming is the intended outcome, and that only `within_price: 0` makes it not ok.
+- **A list of one result counted as zero.** Result cards were recognised by their ordinal, and a list shorter than three gets no ordinals, so after code chose "Under $75" (an exact match for "under seventy five dollars") the counts said 0 and the summary said "no white sneakers under seventy five dollars" next to a $72 shoe. A card is now a row with an ordinal, or any link that shows a price. Unit test added.
+- **A price option chosen in code could not be taken back.** The store's price radios had no "Any price", so once "Under $75" was set, "actually under a hundred dollars" left it on and Jev, not shown the price group, had nothing to do. The store now has an "Any price" radio, as real shops do (it is a shopper feature, not an agent hook). In code: an option named "Any…" or "All…" never counts as set (`isNeutral` in `shared/groups.ts`), and when a leftover price option does not match the constraint, code chooses the neutral one and says "Cleared price Under $75". Without a neutral option the filter is left alone.
+- My own tooling, twice: a `\b` written through a shell heredoc arrived in the file as a backspace character (the test caught it; regexes now go through the editor), and the test pane reported a 0 by 0 viewport after I cleared the emulated size, so every snapshot was empty and a healthy build looked broken.
+- The echo guard lifted after the first of two queued phrases ("On it", then the summary). It now counts queued phrases.
+- The first parse call with a new schema took 3.5 s (the provider compiles the schema once), close to the 4 s timeout. Warm calls take 0.8 to 1.5 s. If a first call ever times out, the code fallback above covers the price and the task carries on.
+
+**Jev wording changed**
+
+- Task-leash `operation`: one sentence added. "If `handled_by_code` is present, it lists parts of `goal` that the assistant already takes care of outside the page: ignore those parts when choosing, and do not wait for them before DONE." Without it Jev kept looking for a price control. No thresholds changed in M4.
+
+**Surprises**
+
+- Haiku parses "a hundred and fifty" correctly every time, and maps "white sneakers" onto the page's own category and colour names because the parse sees the page's categories and filter groups.
+- The LLM is 4 to 8 times slower than Jev (0.8 to 1.5 s against 0.16 to 0.25 s), which is the whole argument for keeping it at the edges: a task pays for it twice, a drive-mode command never does.
+
+**Known limits**
+
+- Constraints live in memory. A full page load forgets them, and the dimming with them (the demo store navigates without reloading).
+- With the LLM away there is no spoken summary; code has the counts and could say them, but that was not asked for.
+- `mentionsPrice` is a plain pattern. "check the under 75 price filter" goes to the task path too (code then selects "Under $75" because it matches exactly), which is right but slower than a drive-mode click.

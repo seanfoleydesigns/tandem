@@ -1,13 +1,12 @@
 // Clean slate. A new search starts from the filters the goal asks for, not from whatever the last task
 // left behind. Jev judges (is this a refinement? does the goal ask for this option?); code decides what to clear.
 import { KEEP_MIN, REFINES_MIN } from './config';
-import { controlGroups, labelKey } from './groups';
+import { controlGroups, isChosen, labelKey } from './groups';
 import { normalise } from './speech';
 import type { ElementRow, Preference, Snapshot } from './types';
 
 export type SetOption = { id: string; group: string; key: string; option: string; row: ElementRow };
 
-const isChosen = (row: ElementRow) => /(^|, )(checked|selected)($|,)/.test(row.state ?? '');
 
 // Every filter option that is currently on, in reading order.
 export function setOptions(snapshot: Snapshot): SetOption[] {

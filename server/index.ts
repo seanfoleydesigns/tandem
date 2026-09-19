@@ -1,8 +1,10 @@
 import express from 'express';
+import { z } from 'zod';
 import { HEALTH_STATE, healthQuestions } from '../shared/questions';
-import type { DecideRequest, FitsRequest, HealthResponse, MatchRequest, SlateRequest } from '../shared/types';
+import type { DecideRequest, FitsRequest, HealthResponse, MatchRequest, SlateRequest, VerifyRequest } from '../shared/types';
 import { decide, decideRequest, fits, fitsRequest, match, matchRequest, slate, slateRequest } from './decide';
 import { ask, describeError, warm } from './jev';
+import { parseGoal, verifyAndSummarise } from './llm';
 
 const PORT = 8787;
 const app = express();
@@ -83,6 +85,37 @@ app.post('/api/slate', async (req, res) => {
   } catch (err) {
     res.status(502).json({ ok: false, ...describeError(err) });
   }
+});
+
+// M4: the LLM at the edges. Task start and task end only. Both answer 200 even when the LLM is unavailable:
+// the body says so, and the task carries on without it.
+const parseRequest = z.object({
+  goal: z.string().max(2000),
+  page: z.object({
+    title: z.string(), categories: z.array(z.string()).max(40),
+    filters: z.array(z.object({ group: z.string(), options: z.array(z.string()).max(60), set: z.array(z.string()) })).max(30),
+  }),
+});
+app.post('/api/parse', async (req, res) => {
+  const parsed = parseRequest.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: 'bad request' }); return; }
+  res.json(await parseGoal(parsed.data));
+});
+
+const verifyRequest = z.object({
+  goal: z.string().max(2000),
+  constraints: z.record(z.string(), z.unknown()),
+  page: z.object({
+    title: z.string(), headings: z.array(z.string()), notices: z.array(z.string()), categories: z.array(z.string()).max(40),
+    filters: z.array(z.object({ group: z.string(), options: z.array(z.string()).max(60), set: z.array(z.string()) })).max(30),
+    results: z.array(z.string()).max(12),
+  }),
+  counts: z.object({ shown: z.number(), priced: z.number(), within_price: z.number().optional() }),
+});
+app.post('/api/verify', async (req, res) => {
+  const parsed = verifyRequest.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ ok: false, error: 'bad request' }); return; }
+  res.json(await verifyAndSummarise(parsed.data as VerifyRequest));
 });
 
 app.listen(PORT, () => console.log(`[api] listening on http://localhost:${PORT}`));
