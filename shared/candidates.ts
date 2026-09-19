@@ -25,7 +25,8 @@ export function candidates(snapshot: Snapshot): Candidates {
       for (const o of row.options) {
         select.push({ label: `${row.id}_${o.id}`, rowId: row.id, optionId: o.id, row, optionLabel: o.label });
       }
-    } else if (TEXT_ROLES.has(row.role)) type.push(row);
+    } else if (row.sensitive) continue; // a password or payment field is never a target
+    else if (TEXT_ROLES.has(row.role)) type.push(row);
     else click.push(row);
   }
   return { click, type, select };

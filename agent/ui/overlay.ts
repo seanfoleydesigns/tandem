@@ -23,6 +23,7 @@ export type Question = { heading: string; options: string[]; skip?: boolean; sel
 
 export type Overlay = {
   host: HTMLElement;
+  setEnabled: (on: boolean) => void;
   labelStyle: () => LabelStyle;
   pageFocus: () => Element | null;
   ring: (rect: DOMRect, radius?: number) => void;
@@ -70,15 +71,36 @@ function registerAngle() {
   } catch { /* already registered */ }
 }
 
+function adoptStyles(root: ShadowRoot): boolean {
+  try {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(css);
+    root.adoptedStyleSheets = [sheet];
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // `parent` and `hotkeys` exist for the dev gallery, which mounts many overlays side by side.
-export function mountOverlay(events: OverlayEvents, opts: { parent?: HTMLElement; hotkeys?: boolean; scheme?: 'light' | 'dark' } = {}): Overlay {
+// `sealed` is for pages that are not ours (the extension): the shadow root is closed, and events a page script made
+// up are ignored, so a page cannot type a command into the capsule or press "Yes" on the confirm card as the user.
+export function mountOverlay(events: OverlayEvents, opts: { parent?: HTMLElement; hotkeys?: boolean; scheme?: 'light' | 'dark'; sealed?: boolean } = {}): Overlay {
   registerAngle();
   const host = document.createElement('tandem-overlay');
   if (opts.scheme) host.dataset.scheme = opts.scheme;
   host.dataset.mode = 'user';
-  const root = host.attachShadow({ mode: 'open' });
+  const root = host.attachShadow({ mode: opts.sealed ? 'closed' : 'open' });
+  if (opts.sealed) {
+    for (const type of ['click', 'keydown', 'keyup', 'input', 'change', 'pointerdown', 'mousedown']) {
+      root.addEventListener(type, (e) => { if (!e.isTrusted) { e.stopImmediatePropagation(); e.preventDefault(); } }, true);
+    }
+  }
+  // Styles go in through adoptedStyleSheets, so a page's Content-Security-Policy cannot block them. Where
+  // constructed sheets do not exist (jsdom), a <style> element does the same job.
+  const adopted = adoptStyles(root);
   root.innerHTML = `
-    <style>${css}</style>
+    ${adopted ? '' : `<style>${css}</style>`}
     <div class="sr" role="status" aria-live="polite"></div>
     <div class="frame user"></div>
     <div class="veils" aria-hidden="true"></div>
@@ -188,12 +210,16 @@ export function mountOverlay(events: OverlayEvents, opts: { parent?: HTMLElement
   // Hotkeys: "/" command field, "i" inspector, Esc stop. Never while the user is typing in the page.
   if (opts.hotkeys !== false) {
     document.addEventListener('keydown', (e) => {
+      if (!enabled) return; // switched off (the extension's toolbar button): the page has its keys back
+      if (opts.sealed && !e.isTrusted) return;
       if (e.key === 'Escape') return events.onStop();
       if (e.ctrlKey || e.metaKey || e.altKey || isEditable(e.composedPath()[0])) return;
       if (e.key === '/') { e.preventDefault(); cmd.focus(); }
       if (e.key === 'i') { inspector.hidden = !inspector.hidden; draw(); }
     });
   }
+
+  let enabled = true;
 
   // Disambiguation badges follow their elements while the question is open.
   let badged: [Element, Element] | undefined;
@@ -227,6 +253,11 @@ export function mountOverlay(events: OverlayEvents, opts: { parent?: HTMLElement
 
   return {
     host,
+    // Off means gone from the page: nothing drawn, no hotkeys. The extension turns Tandem on and off per tab.
+    setEnabled(on) {
+      enabled = on;
+      host.style.setProperty('display', on ? '' : 'none', on ? '' : 'important');
+    },
     labelStyle: () => labelStyle,
     // The field the user is in: the page's own focus, or what had focus before the command field took it.
     pageFocus() {

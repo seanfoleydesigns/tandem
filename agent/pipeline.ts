@@ -10,6 +10,7 @@ import { MATCH_SKIP, MATCH_UNCLEAR } from '../shared/questions';
 import { isStop, normalise, pickOneOrTwo, pickYesOrNo } from '../shared/speech';
 import type { Constraints, ElementRow, MatchResponse, ParseResponse, VerifyRequest, VerifyResponse } from '../shared/types';
 import { act, confirmationFor, decideOnce, runLoop, type AskResult, type Decision, type Disambiguation, type LoopHooks, type Trace } from './loop';
+import { env, type SavedTask } from './env';
 import { deletePref, listPrefs, savePref } from './memory';
 import { takeSnapshot } from './snapshot';
 import type { Overlay } from './ui/overlay';
@@ -40,7 +41,7 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
   // /api/match: which option does this answer mean? Returns an option name, "skip", "unclear", or nothing on failure.
   async function matchOption(group: string, options: string[], answer: string): Promise<string | undefined> {
     try {
-      const res = await fetch('/api/match', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ group, options, answer }) });
+      const res = await env().api('/api/match', { body: JSON.stringify({ group, options, answer }) });
       return res.ok ? ((await res.json()) as MatchResponse).head.choice : undefined;
     } catch {
       return undefined;
@@ -50,7 +51,7 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
   // ---- M4: the LLM at the edges. Reached only from the task leash, through these two functions. ----
   const post = async <T>(url: string, body: unknown): Promise<T | undefined> => {
     try {
-      const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      const res = await env().api(url, { body: JSON.stringify(body) });
       return res.ok ? ((await res.json()) as T) : undefined;
     } catch {
       return undefined; // no server, no key, a timeout: the task carries on without the LLM
@@ -58,7 +59,10 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
   };
   function parseGoal(goal: string) {
     const { title, categories, filters } = pageDigest(takeSnapshot({ overlay: overlay.host, wide: true }).snapshot);
-    return post<ParseResponse>('/api/parse', { goal, page: { title, categories, filters } });
+    // The parse gets the page's vocabulary, not its state. Told which section was current, it answered
+    // "category: Running" for "find me white sneakers" about half the time, and Jev then rightly said DONE on Running.
+    const vocabulary = { title, categories: categories.map((c) => c.replace(/ \(current\)$/, '')), filters: filters.map((f) => ({ ...f, set: [] })) };
+    return post<ParseResponse>('/api/parse', { goal, page: vocabulary });
   }
   const verify = (req: VerifyRequest) => post<VerifyResponse>('/api/verify', req);
 
@@ -142,14 +146,14 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
     // M3 behaviour, where the frame appears only when a second step begins.
     onThinking: (on, llmAnswered) => overlay.setMode(on ? 'thinking' : llmAnswered ? 'agent' : 'user'),
     lastConstraints: () => constraints,
-    setConstraints: (c) => { constraints = c; refreshDim(); },
+    setConstraints: (c) => { constraints = c; env().constraints.save(c); refreshDim(); },
   };
 
   // An idle connection to Jev closes after a few seconds. Open it while the user is still talking or typing.
   function warm() {
     if (performance.now() - lastWarm < WARM_EVERY_MS) return;
     lastWarm = performance.now();
-    void fetch('/api/warm', { method: 'POST' }).catch(() => {});
+    void env().api('/api/warm').catch(() => {});
   }
 
   function dropSpec() {
@@ -348,6 +352,21 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
     traces: () => traces,
     // The command bar does everything voice does.
     typed: (text: string) => handle(text, { final: performance.now() }),
+
+    // A task was running when the page loaded (the extension): carry on, without a word. The trail says why.
+    async resume(task: SavedTask) {
+      if (busy) return;
+      busy = true;
+      abort = new AbortController();
+      overlay.setBusy(task.goal);
+      overlay.trail('Carried on after the page loaded');
+      try {
+        const trace = await runLoop({ goal: task.goal, leash: 'task', maxSteps: MAX_STEPS, heard: { final: performance.now() }, signal: abort.signal, resume: task }, hooks);
+        handBack(trace);
+      } finally { busy = false; abort = undefined; }
+    },
+    // The last task's constraints, given back after a page load, so its price dimming is still there.
+    restoreConstraints(c: Constraints) { constraints = c; refreshDim(); },
 
     onSpeechStart() { warm(); overlay.wave(); },
 

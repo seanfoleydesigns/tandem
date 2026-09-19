@@ -2,13 +2,14 @@
 // snapshot → (task: saved preferences, in code) → /api/decide → policy.resolve → execute → settle → record.
 import { newBudget, type Budget } from '../shared/blockers';
 import { candidates, groupsByLabel, rowLine, type Candidates } from '../shared/candidates';
-import { MAX_TASK_MS, type LabelStyle } from '../shared/config';
+import { LEAVING_WAIT_MS, MAX_TASK_MS, type LabelStyle } from '../shared/config';
 import { mergeConstraints } from '../shared/constraints';
 import { fitPool, rankFits } from '../shared/fits';
 import { pageDigest } from '../shared/digest';
 import { cleanLabel, controlGroups, isChosen, isNeutral, labelKey, unsetGroups, type ControlGroup } from '../shared/groups';
-import { declines, denied, resolve, type Resolution, type Why } from '../shared/policy';
+import { asksFor, declines, denied, resolve, type Resolution, type Why } from '../shared/policy';
 import { countResults, exactOption, parseRange, priceGroup, priceLimit, sortAscending, wanted, withoutPriceGroup } from '../shared/price';
+import { searchField, taskTyping } from '../shared/search';
 import { planSlate, setOptions } from '../shared/slate';
 import { normalise } from '../shared/speech';
 import type {
@@ -16,6 +17,7 @@ import type {
   ParseResponse, Preference, SlateResponse, VerifyRequest, VerifyResponse,
 } from '../shared/types';
 import { clearBlocker, inPopup, type BlockerTrace } from './blockers';
+import { env, type SavedTask } from './env';
 import * as exec from './execute';
 import { openModal, takeSnapshot, type Snap } from './snapshot';
 
@@ -34,6 +36,7 @@ export type Decision = {
   t2: number; // response received
   response?: DecideResponse;
   error?: string;
+  typing?: 'query' | 'span'; // task leash: TYPE was on offer in this decision
 };
 
 export type Option = { label: string; line: string; row: ElementRow; el: Element; option?: HTMLOptionElement };
@@ -63,7 +66,8 @@ export type Trace = {
   verdict?: { ok: boolean; issues: string[]; spoken: string };
   blocker?: BlockerTrace; // a pop-up or banner was in the way, and what was done about it
   rowNames: Map<string, string>;
-  result: 'acted' | 'ignored' | 'asked' | 'confirm' | 'task' | 'done' | 'stuck' | 'yours' | 'stopped' | 'failed' | 'error';
+  // 'gated': Jev said DONE but the page does not show every attribute yet; the loop decides again.
+  result: 'acted' | 'ignored' | 'asked' | 'gated' | 'confirm' | 'task' | 'done' | 'stuck' | 'yours' | 'stopped' | 'failed' | 'error';
   note: string;
 };
 
@@ -89,13 +93,14 @@ export type LoopHooks = {
   lastConstraints: () => Constraints;
   setConstraints: (c: Constraints) => void;
   blockers?: { budget: Budget; signal?: AbortSignal }; // set by runLoop: dismissal attempts left in this task or command
+  beforeAct?: (about: ActionRecord) => void; // set by runLoop on the task leash: save the task before an action that may unload the page
 };
 
 const driveHistory: ActionRecord[] = [];
 const describeTarget = (row?: ElementRow) => (row ? [row.role, row.name, row.group].filter(Boolean).join(' · ') : undefined);
 
 export async function decideOnce(
-  input: { utterance?: string; goal?: string; leash: Leash; history: ActionRecord[]; asked?: string[]; prefs?: Preference[]; constraints?: Constraints },
+  input: { utterance?: string; goal?: string; leash: Leash; history: ActionRecord[]; asked?: string[]; prefs?: Preference[]; constraints?: Constraints; typing?: 'query' | 'span'; unmet?: string[] },
   hooks: Pick<LoopHooks, 'overlay' | 'labelStyle' | 'pageFocus' | 'lastConstraints'>, signal?: AbortSignal, taken?: Snap,
 ): Promise<Decision> {
   const snap = taken ?? takeSnapshot({ overlay: hooks.overlay, focused: hooks.pageFocus() });
@@ -114,9 +119,10 @@ export async function decideOnce(
   const body: DecideRequest = {
     leash: input.leash, utterance: input.utterance, goal: input.goal, prefs: input.prefs ?? [],
     history: input.history.slice(-6), snapshot: offered, asked: input.asked, constraints: input.constraints, labelStyle: hooks.labelStyle(),
+    ...(input.typing ? { typing: input.typing } : {}), ...(input.unmet?.length ? { unmet: input.unmet } : {}),
   };
   try {
-    const res = await fetch('/api/decide', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal });
+    const res = await env().api('/api/decide', { body: JSON.stringify(body), signal });
     const json = (await res.json()) as DecideResponse | ApiError;
     if (!res.ok || 'error' in json) throw new Error('error' in json ? json.error : `HTTP ${res.status}`);
     decision.response = json;
@@ -130,7 +136,7 @@ export async function decideOnce(
 // Follow-up to an uncertain target: one Noul per candidate. Returns nothing if the call fails.
 async function fitCheck(utterance: string, rows: ElementRow[], leash: Leash, signal?: AbortSignal): Promise<FitsResponse | undefined> {
   try {
-    const res = await fetch('/api/fits', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ utterance, rows, leash }), signal });
+    const res = await env().api('/api/fits', { body: JSON.stringify({ utterance, rows, leash }), signal });
     return res.ok ? ((await res.json()) as FitsResponse) : undefined;
   } catch {
     return undefined;
@@ -140,10 +146,19 @@ async function fitCheck(utterance: string, rows: ElementRow[], leash: Leash, sig
 // Carry out one chosen operation on one element, then wait for the page to settle.
 export async function act(
   action: { op: Operation; row?: ElementRow; el?: Element; option?: HTMLOptionElement; text?: string; append?: boolean; usedPref?: string },
-  hooks: Pick<LoopHooks, 'overlay' | 'onRing'> & Partial<Pick<LoopHooks, 'onTrail' | 'blockers'>>, history: ActionRecord[] = driveHistory,
+  hooks: Pick<LoopHooks, 'overlay' | 'onRing'> & Partial<Pick<LoopHooks, 'onTrail' | 'blockers' | 'beforeAct'>>, history: ActionRecord[] = driveHistory,
 ): Promise<{ outcome: exec.ExecResult; t3: number; settleMs: number; blocker?: BlockerTrace }> {
   let before = { url: location.href, scrollY: window.scrollY };
   const { op, el } = action;
+  const record = (outcome: ActionRecord['outcome']): ActionRecord => ({
+    op, target: action.row?.name || describeTarget(action.row), value: action.text ?? action.option?.label, usedPref: action.usedPref, outcome, ts: Date.now(),
+  });
+  // If this action loads a new page, this script dies before it can record it: the task is saved with the action
+  // already counted as done. And once the page says it is unloading, nothing more is decided on it.
+  hooks.beforeAct?.(record('changed'));
+  let leaving = false;
+  const onLeave = () => { leaving = true; };
+  window.addEventListener('beforeunload', onLeave);
   const perform = (): exec.ExecResult => {
     if (op === 'SCROLL_DOWN') return exec.scroll(1);
     if (op === 'SCROLL_UP') return exec.scroll(-1);
@@ -164,10 +179,15 @@ export async function act(
   const t3 = performance.now();
 
   const settled = await exec.settle(hooks.overlay, before);
-  history.push({
-    op, target: action.row?.name || describeTarget(action.row), value: action.text ?? action.option?.label, usedPref: action.usedPref,
-    outcome: !outcome.ok ? 'failed' : settled.changed ? 'changed' : 'no_change', ts: Date.now(),
-  });
+  window.removeEventListener('beforeunload', onLeave);
+  if (leaving && outcome.ok) {
+    // The old document lingers until the new one arrives, looking unchanged. Wait here rather than decide on it,
+    // overwrite the saved task, or end it. If the page cancels the unload after all, carry on.
+    history.push(record('changed'));
+    if (!hooks.blockers?.signal?.aborted) await new Promise((r) => setTimeout(r, LEAVING_WAIT_MS));
+    return { outcome, t3, settleMs: settled.ms, blocker };
+  }
+  history.push(record(!outcome.ok ? 'failed' : settled.changed ? 'changed' : 'no_change'));
   return { outcome, t3, settleMs: settled.ms, blocker };
 }
 
@@ -191,10 +211,11 @@ function shortName(name = ''): string {
 export const confirmationFor = trailText;
 
 export async function runLoop(
-  input: { utterance?: string; goal?: string; leash: Leash; maxSteps: number; heard: Heard; prepared?: Promise<Decision>; specMissed?: boolean; signal?: AbortSignal },
+  input: { utterance?: string; goal?: string; leash: Leash; maxSteps: number; heard: Heard; prepared?: Promise<Decision>; specMissed?: boolean; signal?: AbortSignal; resume?: SavedTask },
   base: LoopHooks,
 ): Promise<Trace> {
-  const hooks: LoopHooks = { ...base, blockers: { budget: newBudget(), signal: input.signal } };
+  let currentStep = 0;
+  const hooks: LoopHooks = { ...base, blockers: { budget: newBudget(), signal: input.signal }, beforeAct: (about) => remember(currentStep + 1, about) };
   const budget = hooks.blockers!.budget;
   const task = input.leash === 'task';
   const said = input.utterance ?? input.goal ?? '';
@@ -204,7 +225,12 @@ export async function runLoop(
   const started = performance.now();
   let waited = 0; // time spent waiting for the user does not count against the task clock
   let trace!: Trace;
-  const end = (result: Trace['result'], note?: string, why?: Why): Trace => { trace = { ...trace, result, note: note ?? trace.note, why }; hooks.onStep(trace); return trace; };
+  const end = (result: Trace['result'], note?: string, why?: Why): Trace => {
+    trace = { ...trace, result, note: note ?? trace.note, why };
+    if (task) env().task.clear(); // however it ended, there is nothing left to pick up on the next page
+    hooks.onStep(trace);
+    return trace;
+  };
 
   // Task start, two things at once: Jev checks for a clean slate, and the LLM parses the goal into
   // constraints. The LLM is only ever reached on the task leash: here, and at DONE below.
@@ -214,7 +240,26 @@ export async function runLoop(
   let startBlocker: BlockerTrace | undefined;
   let flowModal: Element | undefined; // a modal the task's own action opened is part of the flow, not a blocker
   let retried = false; // drive mode: one second look after a pop-up was dismissed
-  if (task) {
+  // A task saved before it had really begun (the page unloaded during the clean slate) starts again properly.
+  const resume = task && !input.resume?.fresh ? input.resume : undefined;
+  let sortTried = false;
+  let unmet: string[] = resume?.unmet ?? []; // the DONE gate: attributes the page does not show yet, passed to the next decision
+  let gated = resume?.gated ?? 0;
+  // Saved after every step and just before every action, because the action may unload the page.
+  function remember(step: number, about?: ActionRecord, fresh = false) {
+    if (task) env().task.save({ goal: input.goal ?? '', constraints, history: about ? [...history, about] : [...history], asked: [...asked], step, parsed: !!llm?.parse?.ok, gated, unmet: [...unmet], ts: Date.now(), ...(fresh ? { fresh } : {}) });
+  }
+  if (resume) {
+    // A click loaded a new page in the middle of the task (the extension). Carry on from where it was: the goal
+    // was parsed and the slate cleaned on the first page, so neither happens again.
+    constraints = resume.constraints;
+    history.push(...resume.history);
+    asked.push(...resume.asked);
+    llm = { parse: { ok: resume.parsed, ms: 0 } };
+    hooks.setConstraints(constraints);
+    hooks.onDriving();
+  } else if (task) {
+    remember(0, undefined, true); // if clearing an old filter reloads the page, the next page starts this task again
     // A modal open at task start is dismissed first: the clean slate and the parse must read the real page.
     const modal = openModal(hooks.overlay);
     if (modal) startBlocker = await clearBlocker({ modal }, hooks, budget);
@@ -232,9 +277,10 @@ export async function runLoop(
     hooks.setConstraints(constraints);
     hooks.onThinking(false, !!parsed?.llm.ok);
   }
-  let sortTried = false;
 
-  for (let step = 0; step < input.maxSteps; step++) {
+  for (let step = resume?.step ?? 0; step < input.maxSteps; step++) {
+    currentStep = step;
+    if (!input.signal?.aborted) remember(step); // a stopped loop (a page woken from the back/forward cache) saves nothing
     if (step === 1 || (step === 0 && cleared)) hooks.onDriving(); // the frame appears only when a second step begins
     const snap = takeSnapshot({ overlay: hooks.overlay, focused: hooks.pageFocus() });
     trace = {
@@ -264,7 +310,10 @@ export async function runLoop(
     let decision = step === 0 && input.prepared && !retried ? await input.prepared : undefined;
     const speculative = step !== 0 ? 'none' : input.prepared ? (decision?.response ? 'hit' : 'miss') : input.specMissed ? 'miss' : 'none';
     if (!decision?.response) {
-      decision = await decideOnce({ utterance: input.utterance, goal: input.goal, leash: input.leash, history, asked, prefs: task ? hooks.prefs() : [], constraints: task ? constraints : undefined }, hooks, input.signal, snap);
+      // Typing on the task leash is for searching only, and only when there are words to type (shared/search.ts).
+      const typing = task ? taskTyping({ snapshot: snap.snapshot, history, query: constraints.search_query, parsed: !!llm?.parse?.ok }) : undefined;
+      decision = await decideOnce({ utterance: input.utterance, goal: input.goal, leash: input.leash, history, asked, prefs: task ? hooks.prefs() : [], constraints: task ? constraints : undefined, typing, unmet }, hooks, input.signal, snap);
+      decision.typing = typing;
     }
     const { cands, rowsById, response } = decision;
     const nodes = decision.snap.nodes;
@@ -279,7 +328,9 @@ export async function runLoop(
     const inBlocker = Object.keys(names).filter((id) => declines(names[id]!) && nodes.get(id) && inPopup(nodes.get(id)!));
     const resolution = resolve(response.heads, {
       leash: input.leash, utterance: input.utterance, goal: input.goal, useKind: !task, groups: groupsByLabel(cands),
-      names, inBlocker, needs: response.needs, asked, history,
+      names, inBlocker, needs: response.needs, asked, history, met: response.met, gated,
+      // The field is chosen in code; the words are the LLM's query, or come from typed_span on the fallback.
+      search: (() => { const field = decision!.typing && searchField(decision!.snap.snapshot); return field ? { target: field.id, text: decision!.typing === 'query' ? constraints.search_query : undefined } : undefined; })(),
     });
     trace.resolution = resolution;
     trace.note = resolution.reason;
@@ -366,6 +417,13 @@ export async function runLoop(
     }
 
     if (next.type === 'StartTask') return end('task');
+    if (next.type === 'Continue') {
+      // The DONE gate. Nothing was done; the next decision is told what is still missing.
+      unmet = next.unmet;
+      gated += 1;
+      hooks.onStep({ ...trace, result: 'gated' });
+      continue;
+    }
     if (next.type === 'HandBack' && next.outcome === 'done' && task) {
       // Task end: the LLM checks the page against the goal and writes the spoken summary. Counts come from code.
       hooks.onThinking(true);
@@ -400,6 +458,10 @@ export async function runLoop(
     } else {
       const chosen = next.target ? optionFor(next.target) : undefined;
       if (task && chosen && !inBlocker.includes(chosen.label) && denied(chosen.row.name, input.goal ?? '')) return end('yours', `${trace.note}; "${chosen.row.name}" is on the deny-list`);
+      // Never submit a form on the task leash unless the goal literally asks for it. A search form is the one exception.
+      if (task && chosen && next.op === 'CLICK' && exec.submitsForm(chosen.el) && !asksFor(input.goal ?? '', chosen.row.name)) {
+        return end('yours', `${trace.note}; "${chosen.row.name}" submits a form, and the goal does not ask for that`);
+      }
       if (chosen) trace.winner = chosen.line;
       if (next.op === 'CLICK') pressedRole = chosen?.row.role;
       done = await act({ op: next.op, row: chosen?.row, el: chosen?.el, option: chosen?.option, text: next.text }, hooks, history);
@@ -415,6 +477,7 @@ export async function runLoop(
       const couldOpenIt = done.outcome.ok && !!pressedRole && !['checkbox', 'radio', 'switch', 'option'].includes(pressedRole);
       if (!opened || opened === flowModal || couldOpenIt) flowModal = opened;
     }
+    if (done.outcome.ok) unmet = []; // the page changed: what is missing is judged afresh at the next DONE
     trace.result = done.outcome.ok ? 'acted' : 'failed';
     if (!done.outcome.ok) trace.note += `; failed: ${done.outcome.reason}`;
     hooks.onStep(trace);
@@ -458,7 +521,7 @@ async function cleanSlate(goal: string, hooks: LoopHooks, history: ActionRecord[
   try {
     const { title, headings, notices } = snap.snapshot;
     const body = { goal, page: { title, headings, notices }, filters: set.map((o) => ({ id: o.id, text: `${o.group}: ${o.option}` })) };
-    const res = await fetch('/api/slate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal });
+    const res = await env().api('/api/slate', { body: JSON.stringify(body), signal });
     if (!res.ok) return { cleared: 0, refinement: false };
     answers = (await res.json()) as SlateResponse;
   } catch {
@@ -470,7 +533,9 @@ async function cleanSlate(goal: string, hooks: LoopHooks, history: ActionRecord[
   let cleared = 0;
   for (const o of plan.clear) {
     if (signal?.aborted) break;
-    const done = await act({ op: 'CLICK', row: o.row, el: snap.nodes.get(o.id) }, hooks, []); // housekeeping: not part of loop detection
+    // Housekeeping: not part of loop detection, and not saved as a step. The task is still marked fresh, so if this
+    // click reloads the page the next page parses and cleans the slate again, until nothing is left to clear.
+    const done = await act({ op: 'CLICK', row: o.row, el: snap.nodes.get(o.id) }, { ...hooks, beforeAct: undefined }, []);
     if (done.outcome.ok) cleared += 1;
   }
   if (cleared) {

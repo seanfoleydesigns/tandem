@@ -38,15 +38,47 @@ function covering(el: Element, overlay: Element): { blocked: boolean; by?: Eleme
   return own ? { blocked: false } : { blocked: true, by: top };
 }
 
+const formOf = (el: Element): HTMLFormElement | null => (el as HTMLInputElement).form ?? (composedClosest(el, 'form') as HTMLFormElement | null);
+
+// A search form, strictly: it says so (role=search, itself or around it), or a search field is the only thing in it
+// to fill in. A registration form with a tag picker in it, or a page-wide form that happens to hold the header's
+// search box, is not one.
+function isSearchForm(form: HTMLFormElement): boolean {
+  if (form.getAttribute('role') === 'search' || composedClosest(form, '[role=search]')) return true;
+  const fields = form.querySelectorAll('input:not([type=hidden],[type=submit],[type=button],[type=image],[type=reset]),textarea,select');
+  return fields.length === 1 && fields[0]!.tagName === 'INPUT' && isSearchField(fields[0] as HTMLInputElement);
+}
+
+// Would pressing this submit a form? A search form does not count: searching is what it is for.
+export function submitsForm(el: Element): boolean {
+  if (!el.matches('button:not([type]),button[type=submit],input[type=submit],input[type=image]')) return false;
+  const form = formOf(el);
+  return !!form && !isSearchForm(form);
+}
+
+// Never type into a password or payment field, on either leash, whoever asks. Real checkouts often leave
+// autocomplete off, so the field's own words count too. A false alarm only means one field the agent will not type in.
+const SECRET_TOKEN = /(^|\s)(cc-|current-password|new-password|one-time-code)/;
+const SECRET_WORDS = /card.?(number|no)\b|\bcvv\b|\bcvc\b|security code|expir|passw|passcode|\bpin\b|\bssn\b|social security/i;
+export function isSensitive(el: Element): boolean {
+  const input = el as HTMLInputElement;
+  if (input.type === 'password' || SECRET_TOKEN.test((el.getAttribute('autocomplete') ?? '').trim().toLowerCase())) return true;
+  if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') return false;
+  const labels = Array.from(input.labels ?? []).map((l) => l.textContent ?? '').join(' ');
+  return SECRET_WORDS.test(`${input.name} ${el.id} ${el.getAttribute('aria-label') ?? ''} ${input.placeholder ?? ''} ${labels}`);
+}
+
 export function click(el: Element, overlay: Element, onReady?: OnReady): ExecResult {
   const check = ready(el, overlay, onReady);
   if (check.ok) (el as HTMLElement).click();
   return check;
 }
 
+// The same notion of a search field as shared/search.ts uses for rows: its type or role, or its own words.
 function isSearchField(el: HTMLInputElement): boolean {
-  const hint = `${el.name} ${el.id} ${el.getAttribute('aria-label') ?? ''} ${el.placeholder ?? ''}`.toLowerCase();
-  return el.type === 'search' || el.getAttribute('role') === 'searchbox' || !!composedClosest(el, '[role=search]') || hint.includes('search');
+  const labels = Array.from(el.labels ?? []).map((l) => l.textContent ?? '').join(' ');
+  const words = `${el.getAttribute('aria-label') ?? ''} ${el.placeholder ?? ''} ${labels} ${el.name} ${el.id}`;
+  return el.type === 'search' || el.getAttribute('role') === 'searchbox' || !!composedClosest(el, '[role=search]') || /\bsearch/i.test(words);
 }
 
 // Set the value through the native setter so framework-controlled inputs see the change.
@@ -54,6 +86,7 @@ function isSearchField(el: HTMLInputElement): boolean {
 export function type(
   el: Element, text: string, overlay: Element, onReady?: OnReady, opts: { append?: boolean; submit?: boolean } = {},
 ): ExecResult {
+  if (isSensitive(el)) return { ok: false, reason: 'the agent never types into password or payment fields' };
   const check = ready(el, overlay, onReady);
   if (!check.ok) return check;
   const input = el as HTMLInputElement;
@@ -64,8 +97,10 @@ export function type(
   input.dispatchEvent(new Event('input', { bubbles: true, composed: true })); // composed, as the native event is: it must leave a shadow root
   input.dispatchEvent(new Event('change', { bubbles: true }));
   if (opts.submit !== false && isSearchField(input)) {
-    // A synthetic Enter does not submit a form, so submit it the way Enter would.
-    if (input.form) input.form.requestSubmit();
+    // A synthetic Enter does not submit a form, so submit it the way Enter would: but only a search form. In any
+    // other form the words stay typed and nothing is sent.
+    const form = formOf(input);
+    if (form) { if (isSearchForm(form)) form.requestSubmit(); }
     else for (const t of ['keydown', 'keyup']) input.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', bubbles: true, composed: true }));
   }
   return { ok: true };

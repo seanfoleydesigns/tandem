@@ -3,6 +3,8 @@ import { MAX_ROWS } from '../shared/config';
 import { describeOrdinals, placement, type Placement, type Viewport } from '../shared/ordinals';
 import type { ElementRow, Snapshot } from '../shared/types';
 import { composedClosest, composedContains, composedParent, deepQueryAll } from './dom';
+import { env } from './env';
+import { isSensitive } from './execute';
 import { accessibleName, groupOf, roleOf } from './name';
 
 const INTERACTIVE =
@@ -53,7 +55,8 @@ function stateOf(el: Element, role: string): string | undefined {
     const select = el as HTMLSelectElement;
     parts.push(`selected: ${clean(select.selectedOptions[0]?.textContent)}`);
   } else if ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && input.value) {
-    parts.push(`value: ${input.value.slice(0, 40)}`);
+    // What is typed into a password or payment field never leaves the page: the row says it is filled, no more.
+    parts.push(isSensitive(el) ? 'filled' : `value: ${input.value.slice(0, 40)}`);
   }
   const expanded = el.getAttribute('aria-expanded');
   if (expanded) parts.push(expanded === 'true' ? 'expanded' : 'collapsed');
@@ -135,6 +138,7 @@ export function takeSnapshot(opts: { overlay: Element; focused?: Element | null;
     if (item.ordinal) row.ordinal = item.ordinal;
     if (item.place !== 'visible') row.offscreen = item.place;
     if ((el as HTMLInputElement).required || el.getAttribute('aria-required') === 'true') row.required = true;
+    if (isSensitive(el)) row.sensitive = true; // a password or payment field: listed, never a typing target
     if (el.tagName === 'SELECT') {
       row.options = Array.from((el as HTMLSelectElement).options)
         .filter((o) => !o.disabled)
@@ -154,7 +158,7 @@ export function takeSnapshot(opts: { overlay: Element; focused?: Element | null;
   if (modal && !opts.within) notices.unshift(`Dialog open: ${clean(modal.querySelector('h1,h2,h3')?.textContent) || 'untitled'}`);
 
   const snapshot: Snapshot = {
-    url: location.pathname + location.search,
+    url: env().pageUrl(),
     title: document.title,
     headings, notices, rows,
     ...(focused ? { focused } : {}),

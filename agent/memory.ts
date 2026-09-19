@@ -1,22 +1,13 @@
-// Preferences the user has told us, kept in localStorage and scoped to the site they were given on.
+// Preferences the user has told us, scoped to the site they were given on.
 import { labelKey } from '../shared/groups';
 import type { Preference } from '../shared/types';
+import { env } from './env';
 
-const KEY = 'tandem.prefs';
 const scope = () => location.hostname;
 
-function readAll(): Preference[] {
-  try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(KEY) ?? '[]');
-    return Array.isArray(parsed) ? (parsed as Preference[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeAll(prefs: Preference[]) {
-  try { localStorage.setItem(KEY, JSON.stringify(prefs)); } catch { /* storage may be blocked */ }
-}
+// Where they are kept is the environment's business: localStorage on a page, chrome.storage.local as an extension.
+const readAll = (): Preference[] => env().prefs.read();
+const writeAll = (prefs: Preference[]) => env().prefs.write(prefs);
 
 export const listPrefs = (): Preference[] => readAll().filter((p) => p.scope === scope());
 

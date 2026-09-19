@@ -9,7 +9,8 @@
     "dev:web": "vite",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit",
-    "build:agent": "vite build --config vite.agent.config.ts"
+    "build:agent": "vite build --config vite.agent.config.ts",
+    "build:ext": "vite build --config vite.ext.config.ts --mode content && vite build --config vite.ext.config.ts --mode background"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.127.0",

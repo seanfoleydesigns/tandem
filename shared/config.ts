@@ -22,6 +22,8 @@ export const DICTATION_MIN = 0.6; // DICTATION has a floor too: below it the utt
 // Asking. One needs_* Noul per unset control group rides on every task-leash decide request.
 // A group is asked about when its Noul reaches this and it has not been asked or skipped in this task.
 export const ASK_MIN = 0.7;
+export const MET_MIN = 0.75; // the DONE gate: probed applied 0.89 to 0.91, not applied 0.05 to 0.57
+export const MAX_GATED_DONE = 2; // DONE refused this many times in one task; after that it is accepted and verify says what is off
 export const DISMISS_MIN = 0.6; // refuses × (1 − accepts): probed refusals and closes 0.74 to 0.85, everything else 0.48 or less
 export const MAX_DISMISSALS = 3; // attempts per task, or per drive command
 export const MAX_BLOCKER_CONTROLS = 6; // each one costs a small Jev request, sent in parallel
@@ -34,6 +36,7 @@ export const REFINES_MIN = 0.6;
 export const KEEP_MIN = 0.5; // a set option stays when "goal asks for it" reaches this
 
 export const MAX_STEPS = 25;
+export const LEAVING_WAIT_MS = 10_000; // an action started a page load: wait for the page to go rather than decide on it
 export const MAX_TASK_MS = 60_000;
 
 export const MAX_ROWS = 120; // snapshot rows, in reading order

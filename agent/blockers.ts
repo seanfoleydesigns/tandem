@@ -5,6 +5,7 @@ import { blockerKind, codeFirst, dismissCandidates, dismisses, dismissTrail, pic
 import { MAX_BLOCKER_CONTROLS } from '../shared/config';
 import type { DismissResponse } from '../shared/types';
 import { composedContains, composedParent } from './dom';
+import { env } from './env';
 import * as exec from './execute';
 import { openModal, takeSnapshot } from './snapshot';
 
@@ -84,7 +85,7 @@ export async function clearBlocker(trigger: { cover: Element; target?: Element }
   else {
     try {
       const asked = offered.slice(0, MAX_BLOCKER_CONTROLS);
-      const res = await fetch('/api/dismiss', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ blocker: { kind, title, text }, controls: asked }), signal: hooks.blockers?.signal });
+      const res = await env().api('/api/dismiss', { body: JSON.stringify({ blocker: { kind, title, text }, controls: asked }), signal: hooks.blockers?.signal });
       if (res.ok) {
         const r = (await res.json()) as DismissResponse;
         trace.ms = r.ms;

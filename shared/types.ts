@@ -10,6 +10,7 @@ export type ElementRow = {
   ordinal?: string; // "second visible (item 10 of 24 in Results)", computed in code
   offscreen?: 'above' | 'below'; // set when less than half of the element is in the viewport
   required?: boolean;
+  sensitive?: boolean; // a password or payment field: never typed into, by anyone's instruction
   options?: { id: string; label: string; selected: boolean }[]; // native <select> only
 };
 
@@ -74,6 +75,8 @@ export type DecideRequest = {
   pending?: { group: string };
   snapshot: Snapshot;
   asked?: string[]; // group keys already asked or skipped in this task; they get no needs_* Noul
+  typing?: 'query' | 'span'; // task leash: TYPE is on offer, and where its words come from (shared/search.ts)
+  unmet?: string[]; // task leash: what the DONE gate found missing, e.g. "category: Sneakers"
   labelStyle?: LabelStyle; // inspector override for A/B runs
 };
 
@@ -87,6 +90,7 @@ export type DecideResponse = {
   heads: Heads;
   needs?: Record<string, number>; // task leash: group key -> personal × (1 − given): the user must supply its value
   needsParts?: Record<string, { personal: number; given: number }>; // the two Nouls behind each needs value
+  met?: Record<string, number>; // task leash, the DONE gate: attribute name -> "the page already shows this"
 };
 
 export type HealthResponse =

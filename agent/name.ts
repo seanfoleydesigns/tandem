@@ -56,6 +56,8 @@ const INPUT_ROLES: Record<string, string> = {
 
 export function roleOf(el: Element): string {
   const explicit = clean(el.getAttribute('role'));
+  // An ARIA combobox on a text input is a text field with suggestions, not a dropdown: keep it typeable.
+  if (explicit.split(' ')[0] === 'combobox' && el.tagName === 'INPUT') return (el as HTMLInputElement).type === 'search' ? 'searchbox' : 'textbox';
   if (explicit) return explicit.split(' ')[0]!;
   switch (el.tagName) {
     case 'A': return 'link';

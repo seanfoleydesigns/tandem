@@ -5,7 +5,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
 import { LLM_TIMEOUT_MS, SPOKEN_MAX_WORDS } from '../shared/config';
-import { attributesFromPairs } from '../shared/constraints';
+import { attributesFromPairs, correctAttributes } from '../shared/constraints';
 import { mentionsPrice, wanted } from '../shared/price';
 import type { Constraints, LlmCall, ParseRequest, ParseResponse, VerifyRequest, VerifyResponse } from '../shared/types';
 
@@ -32,7 +32,7 @@ const Verdict = z.object({ ok: z.boolean(), issues: z.array(z.string()), spoken:
 
 // The page may be any kind of site. Shopping appears only as examples.
 const PARSE_SYSTEM = `You turn a user's spoken request into constraints for the web page they are on. The page may be any kind of site: a shop, a news list, a reference site, a web app.
-Return only what the request states. Use null, or an empty list, for anything it does not state.
+Return only what the request states. Use null, or an empty list, for anything it does not state. The page is given only for its vocabulary: where the user is now, and what is already selected there, is not part of the request.
 - attributes: one {name, value} pair for each property the request states that the page could narrow by. For name, use the label of the matching filter group in page.filters, in lower case (for example "colour", "brand", "language"); use "category" for the kind of thing or the section asked for. For value, use the page's own word when one in page.categories or page.filters matches what the user said (shop example: "trainers" becomes "Sneakers"); otherwise use the user's word. Never put a price in attributes.
 - Prices are plain numbers: "under a hundred dollars" is max_price 100; "between fifty and eighty" is min_price 50 and max_price 80. A vague word such as "cheap" states no number, so both stay null.
 - search_query: the words to type into the site's search box, when the request asks to search for something, or names a specific thing to find that the page does not already list (for example "find the article about Alan Turing" gives "Alan Turing"). Otherwise null.
@@ -45,7 +45,7 @@ You are given the goal, the constraints, a digest of the page, and counts that w
 - ok is false only when the page plainly does not match the goal: the wrong section or kind of item, a filter named in constraints.attributes that is not applied (shop example: a colour), or a search or list with no results. When the goal was to open or reach one page rather than to list results, judge by the title and headings, and "shown" being 0 is not an issue.
 - A price limit is never applied as a filter on the page. The assistant dims the results outside the limit on the user's screen instead, and that is the intended outcome. So results outside the limit, or a price filter that is not set, are never an issue and never make ok false. The one exception: when "within_price" is 0, ok is false, because nothing fits the price.
 - issues: short phrases; an empty list when ok is true.
-- spoken: at most ${SPOKEN_MAX_WORDS} words, plain and friendly, no lists. For a list of results, say how many there are. Only when constraints has max_price or min_price, also say how many are within it; otherwise never mention a price. Shop examples: with a price limit, "Nine white sneakers in your size, six under a hundred dollars."; without one, "Nine white sneakers in your size." For a single page, say what is now open. When ok is false, say what is off instead.`;
+- spoken: at most ${SPOKEN_MAX_WORDS} words, plain and friendly, no lists, and never name individual results. For a list of results, say how many there are. Only when constraints has max_price or min_price, also say how many are within it; otherwise never mention a price. Shop examples: with a price limit, "Nine white sneakers in your size, six under a hundred dollars."; without one, "Nine white sneakers in your size." For a single page, say what is now open. When ok is false, say what is off instead.`;
 
 async function call<T extends z.ZodType>(system: string, payload: unknown, schema: T): Promise<{ data?: z.infer<T>; llm: LlmCall }> {
   const started = performance.now();
@@ -84,7 +84,8 @@ export async function parseGoal(req: ParseRequest): Promise<ParseResponse> {
   const { data, llm } = await call(PARSE_SYSTEM, req, ParsedGoal);
   const constraints: Constraints = {};
   if (data) {
-    const attributes = attributesFromPairs(data.attributes);
+    // Code corrects the LLM where the goal literally says one of the page's own words and the LLM picked another.
+    const attributes = correctAttributes(attributesFromPairs(data.attributes), req.goal, req.page);
     if (Object.keys(attributes).length) constraints.attributes = attributes;
     if (data.max_price !== null && data.max_price > 0) constraints.max_price = data.max_price;
     if (data.min_price !== null && data.min_price > 0) constraints.min_price = data.min_price;

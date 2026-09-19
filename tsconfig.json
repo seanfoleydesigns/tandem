@@ -12,5 +12,5 @@
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["server", "shared", "agent", "store/src", "tests", "vite.config.ts", "vite.agent.config.ts"]
+  "include": ["server", "shared", "agent", "extension", "store/src", "tests", "vite.config.ts", "vite.agent.config.ts", "vite.ext.config.ts"]
 }

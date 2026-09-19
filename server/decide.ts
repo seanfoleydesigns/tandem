@@ -5,9 +5,10 @@ import { DECIDE_RETRIES, DECIDE_TIMEOUT_MS, FIT_POOL, LABEL_STYLE, MAX_BLOCKER_C
 import { flatConstraints } from '../shared/constraints';
 import { unsetGroups } from '../shared/groups';
 import {
-  dismissQuestions, fitQuestions, kindQuestion, matchQuestion, needsQuestions, operationQuestionSingle, operationQuestionTask,
-  slateQuestions, targetQuestions, typedSpanQuestion, type ChoiceQuestion, type NoulQuestion,
+  dismissQuestions, fitQuestions, kindQuestion, matchQuestion, metQuestion, needsQuestions, operationQuestionSingle, operationQuestionTask,
+  slateQuestions, targetQuestions, typedSpanQuestion, typedSpanQuestionTask, type ChoiceQuestion, type NoulQuestion,
 } from '../shared/questions';
+import { searchField } from '../shared/search';
 import { wordSpans } from '../shared/spans';
 import type { DecideRequest, DecideResponse, DismissRequest, DismissResponse, FitsRequest, FitsResponse, Head, Heads, MatchRequest, MatchResponse, SlateRequest, SlateResponse } from '../shared/types';
 import { ask } from './jev';
@@ -15,7 +16,7 @@ import { ask } from './jev';
 const row = z.object({
   id: z.string(), role: z.string(), name: z.string(),
   state: z.string().optional(), group: z.string().optional(), ordinal: z.string().optional(),
-  offscreen: z.enum(['above', 'below']).optional(), required: z.boolean().optional(),
+  offscreen: z.enum(['above', 'below']).optional(), required: z.boolean().optional(), sensitive: z.boolean().optional(),
   options: z.array(z.object({ id: z.string(), label: z.string(), selected: z.boolean() })).optional(),
 });
 
@@ -24,6 +25,8 @@ export const decideRequest = z.object({
   utterance: z.string().max(2000).optional(),
   goal: z.string().max(2000).optional(),
   constraints: z.record(z.string(), z.unknown()).optional(),
+  typing: z.enum(['query', 'span']).optional(),
+  unmet: z.array(z.string().max(200)).max(10).optional(),
   prefs: z.array(z.object({ label: z.string(), value: z.string(), scope: z.string(), ts: z.number() })).default([]),
   history: z.array(z.record(z.string(), z.unknown())).default([]),
   pending: z.object({ group: z.string() }).optional(),
@@ -38,6 +41,7 @@ export const decideRequest = z.object({
 const TEXT_ROLES = new Set(['textbox', 'searchbox']);
 const PERSONAL = 'personal_'; // question id prefixes; ids are never sent to the model
 const GIVEN = 'given_';
+const MET = 'met_';
 
 // One Jev request per decision cycle: every head at once, all over the same state.
 export async function decide(req: DecideRequest): Promise<DecideResponse> {
@@ -63,6 +67,7 @@ export async function decide(req: DecideRequest): Promise<DecideResponse> {
           ? { handled_by_code: ['The price limit is applied by the assistant outside the page. There is no price filter to set.'] } : {}),
         prefs: req.prefs.map((p) => ({ label: p.label, value: p.value })),
         history: req.history,
+        ...(req.unmet?.length ? { unmet: req.unmet } : {}), // the DONE gate found these missing
         snapshot: page,
       }
     : { utterance: req.utterance ?? '', ...(req.pending ? { pending: req.pending } : {}), snapshot: page };
@@ -71,8 +76,17 @@ export async function decide(req: DecideRequest): Promise<DecideResponse> {
     ...targetQuestions(candidates(snapshot), labelStyle, req.leash),
   };
   const groupKeys: string[] = [];
+  // The DONE gate: one Noul per attribute the goal states. Keyed "name: value", as `unmet` will list them.
+  const attributes = task ? Object.entries(req.constraints?.attributes ?? {}).slice(0, 8) : [];
   if (task) {
-    questions.operation = operationQuestionTask();
+    // TYPE is on offer only when the agent says so AND this snapshot really has a search field.
+    const typing = req.typing && searchField(snapshot) ? req.typing : undefined;
+    questions.operation = operationQuestionTask({ typing, unmet: !!req.unmet?.length });
+    if (typing === 'span') {
+      const spans = wordSpans(req.goal ?? '');
+      if (spans.length) questions.typed_span = typedSpanQuestionTask(spans);
+    }
+    attributes.forEach(([name, value], i) => { questions[`${MET}${i}`] = metQuestion(name, value); });
     // Two Nouls per unset control group that has not been asked or skipped in this task.
     for (const g of unsetGroups(snapshot)) {
       if (req.asked?.includes(g.key)) continue;
@@ -105,7 +119,9 @@ export async function decide(req: DecideRequest): Promise<DecideResponse> {
     needsParts[key] = { personal, given };
     needs[key] = personal * (1 - given);
   });
-  return { model: r.model, ms: r.ms, usage: r.usage, labelStyle, heads: heads as Heads, ...(task ? { needs, needsParts } : {}) };
+  const met: Record<string, number> = {};
+  attributes.forEach(([name, value], i) => { met[`${name}: ${value}`] = (r.answers[`${MET}${i}`] as { noul: number }).noul; });
+  return { model: r.model, ms: r.ms, usage: r.usage, labelStyle, heads: heads as Heads, ...(task ? { needs, needsParts } : {}), ...(attributes.length ? { met } : {}) };
 }
 
 export const fitsRequest = z.object({ utterance: z.string().max(2000), rows: z.array(row).min(1).max(FIT_POOL), leash: z.enum(['single', 'task']).optional() });

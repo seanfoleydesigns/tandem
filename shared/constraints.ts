@@ -34,3 +34,30 @@ export function flatConstraints(c: Constraints | undefined): Record<string, unkn
   const { attributes, ...rest } = c ?? {};
   return { ...attributes, ...rest };
 }
+
+// Exact matches are code's job, as a CORRECTION only. The LLM once in three read "sneakers" as the Running section
+// (both are the page's own words, and the page was on Running). So: for an attribute the LLM itself returned, when
+// its value is one of the page's options for that group but the goal literally says a different one, and only that
+// one, code puts the said one back. It never adds an attribute: ordinary goal words ("about", "search", "new") are
+// also link names on real sites, and an invented attribute would send the DONE gate after a navigation link.
+type Vocabulary = { categories: string[]; filters: { group: string; options: string[] }[] };
+const CURRENT = / \(current\)$/; // how the page digest marks the open section
+const plain = (s: string) => s.replace(CURRENT, '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ').trim();
+
+export function correctAttributes(attributes: Record<string, string>, goal: string, page: Vocabulary): Record<string, string> {
+  const words = ` ${plain(goal)} `;
+  const said = (option: string) => {
+    const o = plain(option);
+    if (o.length < 3 || /^[\d. ]+$/.test(o)) return false; // too short, or a bare number that could be a price or a size
+    const singular = o.endsWith('s') && o.length >= 5 ? o.slice(0, -1) : o; // "boots" is said by "boot"; "news" is not said by "new"
+    return words.includes(` ${o} `) || words.includes(` ${singular} `) || words.includes(` ${o}s `);
+  };
+  const out = { ...attributes };
+  for (const [key, value] of Object.entries(attributes)) {
+    const options = (key === 'category' ? page.categories : page.filters.find((f) => labelKey(f.group) === key)?.options ?? []).map((o) => o.replace(CURRENT, ''));
+    const hits = options.filter(said);
+    const isOption = options.some((o) => plain(o) === plain(value));
+    if (isOption && hits.length === 1 && plain(hits[0]!) !== plain(value)) out[key] = hits[0]!;
+  }
+  return out;
+}

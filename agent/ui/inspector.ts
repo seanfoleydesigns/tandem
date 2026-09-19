@@ -1,4 +1,5 @@
 // Inspector: a plain table. Model id, timings, each head's top three, and the policy reason in words.
+import { MET_MIN } from '../../shared/config';
 import { NONE, NO_SPAN } from '../../shared/candidates';
 import type { LabelStyle } from '../../shared/config';
 import type { Head, LlmCall } from '../../shared/types';
@@ -52,6 +53,7 @@ export function renderInspector(trace: Trace | undefined, labelStyle: LabelStyle
       ${trace.winner ? `<tr><th>winning row</th><td>${esc(trace.winner)}</td></tr>` : ''}
       ${trace.disambiguation ? `<tr><th>one or two</th><td>${trace.disambiguation.options.map((o, i) => `${i + 1}: ${esc(o.line)}`).join('<br>')}</td></tr>` : ''}
       ${trace.fit ? `<tr><th>fit check</th><td>${trace.fit.asked} candidates asked, ${trace.fit.ms} ms, ${trace.fit.fits.length ? 'fit: ' + trace.fit.fits.map((f) => `${esc(f.line.split(' · ')[1] ?? f.line)} ${f.noul.toFixed(2)}`).join(', ') : 'none fit'}</td></tr>` : ''}
+      ${r?.met ? `<tr><th>DONE gate</th><td>${Object.entries(r.met).map(([k, p]) => `${esc(k)} ${p.toFixed(2)}`).join(' · ')} · DONE needs every one at ${MET_MIN} or more</td></tr>` : ''}
       ${trace.blocker ? `<tr><th>blocker</th><td>${esc(blockerCell(trace.blocker))}</td></tr>` : ''}
       <tr><th>model</th><td>${esc(r?.model ?? '–')} · label style ${esc(r?.labelStyle ?? labelStyle)} · ${trace.rows} rows · ${r ? `${r.usage.input_tokens} tokens in` : ''}</td></tr>
     </table>

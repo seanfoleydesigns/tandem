@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Tandem (local prototype)",
+  "version": "0.5.0",
+  "description": "A voice copilot for the page in front of you. Off until you click it, one tab and one site at a time. Talks only to the Tandem server on this computer.",
+  "minimum_chrome_version": "116",
+  "action": { "default_title": "Turn Tandem on for this tab" },
+  "background": { "service_worker": "dist/background.js" },
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["http://localhost:8787/*"],
+  "optional_host_permissions": ["<all_urls>"]
+}

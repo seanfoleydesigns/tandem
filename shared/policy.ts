@@ -2,7 +2,7 @@
 // Rules 2, 3 and 5 read Jev's `confidence`. Rule 4 reads the top probability.
 
 import { NONE, NO_SPAN } from './candidates';
-import { AMBIG_MASS, AMBIG_TOP, ASK_MIN, DICTATION_MIN, OP_MIN, TARGET_MIN, TASK_MIN } from './config';
+import { AMBIG_MASS, AMBIG_TOP, ASK_MIN, DICTATION_MIN, MAX_GATED_DONE, MET_MIN, OP_MIN, TARGET_MIN, TASK_MIN } from './config';
 import { labelKey } from './groups';
 import type { ActionRecord, Head, Heads, Leash, Operation } from './types';
 
@@ -15,6 +15,8 @@ export type Resolution =
   | { type: 'Answer'; reason: string }
   | { type: 'Dictate'; text: string; reason: string }
   | { type: 'HandBack'; outcome: 'done' | 'stuck' | 'stopped' | 'yours'; reason: string }
+  // The DONE gate: Jev said DONE, but the page does not show these attributes yet. Decide again, with them in state.
+  | { type: 'Continue'; unmet: string[]; reason: string }
   // Drive mode, and the target is on the deny-list: speech can be misheard, so ask for a second, explicit yes.
   | { type: 'Confirm'; op: Operation; target: string; name: string; reason: string }
   // Never silent: an Ignore says why. not_found: "I can't find that on this page." unsure: "Didn't catch that."
@@ -30,6 +32,9 @@ export type PolicyContext = {
   groups: Record<string, string | undefined>; // candidate label -> group
   names?: Record<string, string>; // candidate label -> accessible name, for the deny-list
   inBlocker?: string[]; // candidate labels that sit inside a pop-up or banner
+  met?: Record<string, number>; // task leash: attribute "name: value" -> the page already shows it (Noul)
+  gated?: number; // how many times DONE has been refused in this task
+  search?: { target: string; text?: string }; // task leash: the search field code chose, and the LLM's query if any
   needs?: Record<string, number>; // task leash: group key -> needs_* Noul
   asked?: string[]; // group keys asked or skipped in this task
   history?: ActionRecord[]; // this task's actions, oldest first
@@ -68,6 +73,20 @@ const ADD_TO_CART = /\badd to (cart|bag|basket)\b/i;
 export function denied(name: string, goal: string): boolean {
   if (DENY.test(name)) return true;
   return ADD_TO_CART.test(name) && !ADD_TO_CART.test(goal); // allowed only if the goal literally asks for it
+}
+
+// A form is submitted on the task leash only when the goal literally asks for it: it names the control ("add to
+// cart", "sign in") in so many words.
+// Naming it is not enough ("find me a sign in sheet", "how to delete my account"): the name has to open the goal or
+// follow a pressing verb or a connective, the way a step in a list of steps does.
+export function asksFor(goal: string, name: string): boolean {
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const n = norm(name);
+  if (n.length < 3) return false;
+  const g = norm(goal);
+  if (/\bhow (to|do|can)\b|\babout\b/.test(g)) return false; // asking about it is not asking for it
+  // `n` is letters, digits and single spaces by now, so it goes into the pattern as it is.
+  return new RegExp(`(^|\\b(press|click|hit|tap|submit|choose|and|then) (the )?)${n}( button)?( for me| please)?( and | then |$)`).test(g);
 }
 
 // Pop-ups and banners. A control that accepts, joins or spends is never pressed to get one out of the way.
@@ -143,8 +162,16 @@ export function resolve(heads: Heads, ctx: PolicyContext): Resolution {
   const opWhy = `operation ${op} (conf ${f(heads.operation.confidence)}, top ${f(topProbability(heads.operation))})`;
   if (heads.operation.confidence < OP_MIN) return giveUp(`${opWhy} is under OP_MIN ${OP_MIN}`, 'unsure');
 
-  // DONE is accepted only when nothing essential is still unknown.
-  if (op === 'DONE') return asks.length ? askTop(opWhy) : { type: 'HandBack', outcome: 'done', reason: opWhy };
+  // DONE is accepted only when nothing essential is still unknown, and only when the page shows every attribute
+  // the goal states. A Choice collapses onto DONE while a section is still wrong; a Noul per attribute does not.
+  if (op === 'DONE') {
+    if (asks.length) return askTop(opWhy);
+    const unmet = Object.entries(ctx.met ?? {}).filter(([, p]) => p < MET_MIN);
+    if (unmet.length && (ctx.gated ?? 0) < MAX_GATED_DONE) {
+      return { type: 'Continue', unmet: unmet.map(([a]) => a), reason: `${opWhy}, but the page does not show ${unmet.map(([a, p]) => `${a} (${f(p)})`).join(', ')} (MET_MIN ${MET_MIN})` };
+    }
+    return { type: 'HandBack', outcome: 'done', reason: unmet.length ? `${opWhy}; still not shown after ${MAX_GATED_DONE} tries: ${unmet.map(([a]) => a).join(', ')}` : opWhy };
+  }
   if (op === 'STUCK') return giveUp(opWhy, 'not_found');
 
   const act = (action: { target?: string; text?: string }, reason: string): Resolution => {
@@ -166,6 +193,16 @@ export function resolve(heads: Heads, ctx: PolicyContext): Resolution {
   };
 
   if (op === 'SCROLL_DOWN' || op === 'SCROLL_UP' || op === 'GO_BACK') return act({}, opWhy);
+
+  // TYPE on the task leash is for searching only. Code chose the field; the words are the LLM's search_query, or,
+  // when the parse was unavailable, the span of the goal that typed_span picks. Jev never writes them.
+  if (!drive && op === 'TYPE') {
+    if (!ctx.search) return giveUp(`${opWhy}; typing is not on offer here`, 'not_found');
+    if (ctx.search.text) return act({ target: ctx.search.target, text: ctx.search.text }, `${opWhy}; the search field, and the query parsed from the goal`);
+    const span = heads.typed_span;
+    if (!span || span.choice === NO_SPAN || span.confidence < TARGET_MIN) return giveUp(`${opWhy}; no clear words in the goal to search for`, 'unsure');
+    return act({ target: ctx.search.target, text: span.choice }, `${opWhy}; the search field; typed_span ${JSON.stringify(span.choice)} (conf ${f(span.confidence)})`);
+  }
 
   // Rule 3: the target head for the chosen operation
   const headName = TARGET_HEAD[op];

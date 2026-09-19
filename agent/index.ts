@@ -1,29 +1,8 @@
-// Tandem agent: boot, mount the overlay, wire voice and the command bar into one pipeline.
-// This script is the only thing the host page loads. It knows the page through the DOM alone.
+// Tandem agent, as the demo store loads it: one script tag. It knows the page through the DOM alone.
+import { boot } from './boot';
 import type { Trace } from './loop';
-import { createPipeline } from './pipeline';
-import { mountOverlay } from './ui/overlay';
-import { createVoice, type Voice } from './voice';
 
-let voice: Voice;
-
-const overlay = mountOverlay({
-  onCommand: (text) => void pipeline.typed(text),
-  onTyping: () => pipeline.warm(),
-  onMic: (on) => voice.setMic(on),
-  onMute: (on) => voice.setMuted(on),
-  onStop: () => pipeline.stop('Esc'),
-});
-
-const pipeline = createPipeline(overlay, () => voice);
-
-voice = createVoice({
-  onSpeechStart: pipeline.onSpeechStart,
-  onInterim: pipeline.onInterim,
-  onFinal: pipeline.onFinal,
-  onState: overlay.setMicState,
-});
-overlay.setMicState(voice.supported ? 'off' : 'unsupported');
+const { pipeline, voice } = boot();
 
 // Dev-only simulator. It feeds the same pipeline as the recognizer, echo guard included, so the
 // voice path can be checked without a microphone. Stripped from the standalone build.
