@@ -276,3 +276,36 @@ Started 15:10, finished 15:22 EDT (about 12 min). Checked with the dev simulator
 - No new gate on kind confidence. The bias toward ACTION depends on letting a weak TASK or DICTATION fall through to the operation head, and the operation's own confidence already produces "Didn't catch that."
 - "Take the first" on the task leash applies to things to open, never to a control group. In the hero scenario Jev chooses DONE at 0.97 to 0.99 and does not try to open a product, but this is the rule to watch.
 - Limits of the clean slate: a leftover radio that is not a saved preference cannot be clicked off, and a search query in the URL is not a control either.
+
+## 2026-09-19 · M3b: visual pass
+
+Started 15:22, finished 15:32 EDT (about 10 min). No behaviour changes: `agent/ui/` and the CSS variables file, plus the words of the confirmations.
+
+**Built**
+
+- States gallery first, dev only: `/gallery.html` renders 14 overlay states side by side (idle, listening, heard, confirmation, agent driving, waiting for me, thinking, question card, badges, memory panel, stuck, never silent, typing, no matches), with switches for the scheme (system, light, dark) and the page behind (white, black, half and half). It lives in `agent/ui/` and is served by a small middleware in `vite.config.ts`, so `store/` holds nothing of the agent's. `dist/agent.js` contains neither the gallery nor `__tandem`.
+- To put many overlays on one page, `mountOverlay` takes a parent element. A gallery cell is the containing block for the overlay's fixed parts (`contain: layout paint`), and the ring and badges are placed relative to the host's own origin, which is (0, 0) on a real page.
+- One capsule: mic (an icon when off, a four-bar blue waveform when listening, moving on `speechstart` and interim results and still when silent), the state in words, what was heard or done, Stop with its Esc hint, sound, memory. The words are also the command field: press `/` or click them. It widens for the transcript and morphs into the question card through `interpolate-size: allow-keywords`, so the height animates to the card's natural size.
+- The driver frame: a conic gradient (violet, magenta, amber) rotating once every 8 s through a registered `--t-angle` property, masked to an inset edge with a 6px bright core fading over 40px. Waiting: the glow stops and becomes a 3px blue frame. Thinking: it dims and breathes. Hand-back: a 400 ms fade. `@property` inside a shadow root is ignored by the browser, so the property is registered from script with `CSS.registerProperty`.
+- The action ring takes the element's own corner radius plus 4px, scales from 1.06 to 1 and fades over 600 ms; blue in drive mode, the agent's solid violet in task mode.
+- Question card: 22px semibold title, chips at least 44px tall with a 14px radius (card radius 28 minus padding 14, so the corners are concentric), a selected chip fills blue with a check, a quiet Skip, the footnote "Say it, or tap." Chips are a radiogroup with arrow-key movement.
+- Confirmations in plain past-tense words, from the element's role: Opened, Pressed, Checked / Unchecked, Chose size 10.5, Sorted by…, Searched for…, Typed…, "Used your saved size, 10.5", "Kept your saved size, 10.5", "Size 10.5. I'll remember that." Memory rows end in "Forget".
+- Accessibility floor as specified, including an `aria-live` region that announces mode changes, questions and confirmations.
+
+**Contrast check (`scripts/contrast.ts`).** It reads the tokens from `styles.css`, composites the 86% material over a white page and a black page, and checks 12 pairs in each of the four combinations. Two failed with the values as given, both in the dark scheme over a white page, where the material composites to a mid grey (about `#3C3C3D`):
+
+| Pair | Was | Fix | Now |
+|---|---|---|---|
+| Secondary text on a hovered icon | 4.18 : 1 | dark `--t-text-2` `#B9B9C4` → `#CDCDD6` | passes |
+| Blue waveform and focus ring on the material | 2.14 : 1 | new token `--t-you-mark`: `#2563EB` in light, `#8AB4FF` in dark | passes |
+
+`#2563EB` itself is unchanged, because white text on it (selected chips, badges) needs it as it is; only blue *marks drawn on the dark material* use the lighter value. All 48 pairs pass.
+
+**What broke**
+
+- The Narrow-by chips were nearly invisible: they sit on the page, not on the capsule, so a 10% fill had nothing behind it. They now carry the material themselves.
+- The gallery scrolled itself on load because badges scroll their target into view; it now returns to the top.
+
+**Not verified here**
+
+- The Browser pane I test in follows a dark system scheme and has no microphone, so the live waveform and the light scheme on the real store were reviewed only in the gallery. Reduced motion, reduced transparency, increased contrast and forced colours are written to the spec but I could not switch those settings on in this browser; they need a look in Chrome's rendering emulation.

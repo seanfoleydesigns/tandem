@@ -1,108 +1,282 @@
-/* All overlay styles live here. Visual design is directed through these variables. */
+/* Tandem overlay. All styles live here; visual design is directed through these variables.
+   Colour is reserved: blue means "you", the violet-magenta-amber gradient means "the agent".
+   Stop is neutral and high contrast. Nothing else is coloured. Pairs are checked at 4.5:1 or better
+   over both a white and a black page by scripts/contrast.ts. */
+
 :host {
-  --t-ink: #14151a;
-  --t-paper: #ffffff;
-  --t-line: #c9ccd6;
-  --t-accent: #3b5bdb;
-  --t-ok: #1f7a4d;
-  --t-warn: #b35c00;
-  --t-listen: #c2255c;
-  --t-font: 13px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --t-mono: 12px/1.35 ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  /* material */
+  --t-material: rgba(255, 255, 255, 0.86);
+  --t-material-solid: #ffffff;
+  --t-hairline: rgba(0, 0, 0, 0.16);
+  --t-shadow: 0 10px 40px rgba(0, 0, 0, 0.18);
+  --t-backdrop: blur(24px) saturate(1.6);
+  /* text and quiet fills */
+  --t-text: #111114;
+  --t-text-2: #4a4a55;
+  --t-fill: rgba(0, 0, 0, 0.06);
+  --t-fill-strong: rgba(0, 0, 0, 0.11);
+  /* you */
+  --t-you: #2563eb; /* fills (white text on it), rings and frames over the page */
+  --t-on-you: #ffffff;
+  --t-you-mark: #2563eb; /* marks drawn on the material: the waveform and the focus ring */
+  /* the agent */
+  --t-agent-1: #7c5cff;
+  --t-agent-2: #e0479e;
+  --t-agent-3: #ff9f2e;
+  --t-agent: #6d4aff;
+  /* stop */
+  --t-stop: #111114;
+  --t-on-stop: #ffffff;
+  /* the action ring follows who is driving */
+  --t-ring: var(--t-you);
+  /* type */
+  --t-font: system-ui, 'Segoe UI Variable Text', -apple-system, Roboto, sans-serif;
+  --t-mono: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  /* shape and motion */
+  --t-edge: 16px;
+  --t-capsule-h: 44px;
+  --t-capsule-r: 22px; /* full pill at 44px */
+  --t-capsule-pad: 4px; /* inner radius = 22 − 4 = 18 */
+  --t-card-r: 28px;
+  --t-card-pad: 14px; /* inner radius = 28 − 14 = 14, the chip radius */
+  --t-chip-r: 14px;
+  --t-morph: 320ms cubic-bezier(0.2, 0.9, 0.25, 1);
+  --t-press: 140ms ease-out;
+
   all: initial;
   position: fixed;
   inset: 0;
   z-index: 2147483647;
-  pointer-events: none; /* the page stays clickable; only panels take pointer events */
-  font: var(--t-font);
-  color: var(--t-ink);
+  pointer-events: none; /* the page stays clickable; only the capsule and panels take pointer events */
+  font: 400 15px/1.35 var(--t-font);
+  font-variant-numeric: tabular-nums;
+  color: var(--t-text);
+  interpolate-size: allow-keywords; /* lets the capsule morph to the card's natural height */
 }
 
-.dock {
-  position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
-  display: grid; gap: 6px; width: min(760px, calc(100vw - 28px));
+@media (prefers-color-scheme: dark) {
+  :host(:not([data-scheme='light'])) {
+    --t-material: rgba(28, 28, 30, 0.86);
+    --t-material-solid: #1c1c1e;
+    --t-hairline: rgba(255, 255, 255, 0.22);
+    --t-text: #f5f5f7;
+    --t-text-2: #cdcdd6;
+    --t-you-mark: #8ab4ff;
+    --t-fill: rgba(255, 255, 255, 0.1);
+    --t-fill-strong: rgba(255, 255, 255, 0.17);
+    --t-stop: #ffffff;
+    --t-on-stop: #111114;
+  }
 }
-.bar {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 8px; border: 1px solid var(--t-line); border-radius: 10px;
-  background: var(--t-paper); box-shadow: 0 6px 24px rgb(0 0 0 / 0.18);
+:host([data-scheme='dark']) {
+  --t-material: rgba(28, 28, 30, 0.86);
+  --t-material-solid: #1c1c1e;
+  --t-hairline: rgba(255, 255, 255, 0.22);
+  --t-text: #f5f5f7;
+  --t-text-2: #cdcdd6;
+  --t-you-mark: #8ab4ff;
+  --t-fill: rgba(255, 255, 255, 0.1);
+  --t-fill-strong: rgba(255, 255, 255, 0.17);
+  --t-stop: #ffffff;
+  --t-on-stop: #111114;
+}
+:host([data-mode='agent']), :host([data-mode='thinking']) { --t-ring: var(--t-agent); }
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+button { font: inherit; color: inherit; border: 0; background: none; margin: 0; padding: 0; cursor: pointer; transition: transform var(--t-press), background-color var(--t-press); }
+button:active { transform: scale(0.96); }
+button:disabled { opacity: 0.5; cursor: default; }
+:focus-visible { outline: 2px solid var(--t-you-mark); outline-offset: 2px; }
+
+/* One material: capsule, card, panels. One soft shadow; no others. */
+.material {
+  background: var(--t-material);
+  -webkit-backdrop-filter: var(--t-backdrop);
+  backdrop-filter: var(--t-backdrop);
+  border: 0.5px solid var(--t-hairline);
+  box-shadow: var(--t-shadow);
   pointer-events: auto;
 }
-.pill { white-space: nowrap; padding: 2px 8px; border-radius: 999px; background: #eef1fb; color: var(--t-accent); font-weight: 600; }
-.cmd { flex: 1; min-width: 0; font: inherit; padding: 5px 8px; border: 1px solid var(--t-line); border-radius: 6px; }
-.cmd:focus { outline: 2px solid var(--t-accent); outline-offset: 0; }
-.heard { max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #555a66; }
-.heard.ok { color: var(--t-ok); }
-.heard.unsure { color: var(--t-warn); }
 
+/* ---- the driver frame: the signature ---------------------------------------------------------- */
+.frame { position: fixed; inset: 0; pointer-events: none; opacity: 0; transition: opacity 400ms ease; }
+.frame::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: conic-gradient(from var(--t-angle, 0deg), var(--t-agent-1), var(--t-agent-2), var(--t-agent-3), var(--t-agent-2), var(--t-agent-1));
+  /* an inset edge glow: a 6px bright core, fading out over 40px */
+  --edge: #000 0, #000 6px, rgba(0, 0, 0, 0.42) 6px, transparent 40px;
+  -webkit-mask: linear-gradient(to bottom, var(--edge)), linear-gradient(to top, var(--edge)), linear-gradient(to right, var(--edge)), linear-gradient(to left, var(--edge));
+  mask: linear-gradient(to bottom, var(--edge)), linear-gradient(to top, var(--edge)), linear-gradient(to right, var(--edge)), linear-gradient(to left, var(--edge));
+}
+.frame.agent { opacity: 1; }
+.frame.agent::before { animation: t-spin 8s linear infinite; }
+.frame.thinking { opacity: 1; }
+.frame.thinking::before { animation: t-spin 8s linear infinite, t-breathe 3.2s ease-in-out infinite; }
+/* waiting for you: the glow stops and becomes a calm blue frame */
+.frame.waiting { opacity: 1; }
+.frame.waiting::before { background: none; -webkit-mask: none; mask: none; border: 3px solid var(--t-you); }
+@keyframes t-spin { to { --t-angle: 360deg; } }
+@keyframes t-breathe { 0%, 100% { opacity: 0.28; } 50% { opacity: 0.6; } }
+
+/* ---- the action ring --------------------------------------------------------------------------- */
 .ring {
-  position: fixed; border: 3px solid var(--t-accent); border-radius: 8px;
-  box-shadow: 0 0 0 4px rgb(59 91 219 / 0.25); opacity: 0; transition: opacity 0.9s ease-out;
+  position: fixed; border: 2.5px solid var(--t-ring); border-radius: 8px; opacity: 0; pointer-events: none;
+  transform: scale(1); transition: opacity 600ms ease-out, transform 600ms var(--t-morph);
 }
-.ring.on { opacity: 1; transition: none; }
+.ring.on { opacity: 1; transform: scale(1.06); transition: none; }
 
-.inspector {
-  position: fixed; top: 10px; right: 10px; width: min(560px, calc(100vw - 20px)); max-height: calc(100vh - 80px);
-  overflow: auto; padding: 8px 10px; border: 1px solid var(--t-line); border-radius: 8px;
-  background: var(--t-paper); box-shadow: 0 6px 24px rgb(0 0 0 / 0.18); pointer-events: auto;
+/* ---- badges -------------------------------------------------------------------------------------- */
+.badge {
+  position: fixed; width: 28px; height: 28px; border-radius: 50%; background: var(--t-you); color: var(--t-on-you);
+  font: 600 15px/28px var(--t-font); text-align: center; pointer-events: auto;
 }
-.inspector[hidden] { display: none; }
-.inspector h2 { font: inherit; font-weight: 700; margin: 0 0 6px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.inspector button { font: inherit; padding: 2px 8px; border: 1px solid var(--t-line); border-radius: 5px; background: #f5f6fa; cursor: pointer; }
-.inspector table { width: 100%; border-collapse: collapse; margin: 0 0 8px; font: var(--t-mono); }
-.inspector th, .inspector td { text-align: left; vertical-align: top; padding: 2px 6px 2px 0; border-bottom: 1px solid #eceef3; }
+/* a 44px hit area around a 28px badge */
+.badge::after { content: ''; position: absolute; inset: -8px; }
+
+/* ---- the dock: narrow-by chips, the trail, the capsule ------------------------------------------ */
+.dock {
+  position: fixed; left: 0; right: 0; bottom: var(--t-edge); display: grid; justify-items: center; gap: 8px;
+  padding: 0 var(--t-edge); pointer-events: none;
+}
+.trail, .narrow { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; max-width: 560px; font-size: 13px; color: var(--t-text-2); }
+.step, .narrow > span {
+  padding: 3px 10px; border-radius: 999px; background: var(--t-material); border: 0.5px solid var(--t-hairline);
+  -webkit-backdrop-filter: var(--t-backdrop); backdrop-filter: var(--t-backdrop); pointer-events: auto;
+}
+.step:last-child { color: var(--t-text); }
+.narrow .chip {
+  min-height: 32px; padding: 4px 12px; font-size: 13px; border-radius: 999px; pointer-events: auto;
+  /* these sit on the page, not on the capsule, so they carry the material themselves */
+  background: var(--t-material); border: 0.5px solid var(--t-hairline);
+  -webkit-backdrop-filter: var(--t-backdrop); backdrop-filter: var(--t-backdrop);
+}
+.narrow .chip:hover { background: var(--t-material-solid); }
+/* the 44px target without a 44px look */
+.narrow .chip::after { content: ''; position: absolute; inset: -6px 0; }
+
+.capsule {
+  --w: 380px;
+  position: relative;
+  width: min(var(--w), 100%);
+  height: var(--t-capsule-h);
+  border-radius: var(--t-capsule-r);
+  padding: var(--t-capsule-pad);
+  overflow: hidden;
+  transition: width var(--t-morph), height var(--t-morph), border-radius var(--t-morph), padding var(--t-morph);
+}
+.capsule.wide { --w: 560px; }
+.capsule[data-view='card'] { --w: 420px; height: auto; border-radius: var(--t-card-r); padding: var(--t-card-pad); }
+
+.bar { display: flex; align-items: center; gap: 4px; height: 100%; animation: t-in 200ms ease-out; }
+.capsule[data-view='card'] .bar { display: none; }
+@keyframes t-in { from { opacity: 0; } }
+
+/* round icon buttons: 36px inside a 44px capsule, radius 18 = 22 − 4 */
+.icon { position: relative; flex: none; width: 36px; height: 36px; border-radius: 18px; display: grid; place-items: center; color: var(--t-text-2); }
+.icon:hover { background: var(--t-fill); color: var(--t-text); }
+.icon[aria-pressed='true'] { color: var(--t-text); }
+.icon::after { content: ''; position: absolute; inset: -4px; } /* 44px target */
+.icon svg { width: 20px; height: 20px; }
+.icon .count { position: absolute; top: 3px; right: 2px; min-width: 14px; font: 600 10px/14px var(--t-font); color: var(--t-text); text-align: center; }
+
+/* the mic: an icon when off, a four-bar blue waveform when listening */
+.mic .wave { display: none; align-items: center; gap: 3px; height: 18px; color: var(--t-you-mark); }
+.mic.listening svg, .mic.paused svg { display: none; }
+.mic.listening .wave, .mic.paused .wave { display: flex; }
+.mic.paused .wave { opacity: 0.45; }
+.wave i { width: 3px; height: 5px; border-radius: 2px; background: currentColor; transition: height 180ms ease-out; }
+.wave.on i { animation: t-wave 620ms ease-in-out infinite; }
+.wave.on i:nth-child(2) { animation-delay: 110ms; }
+.wave.on i:nth-child(3) { animation-delay: 220ms; }
+.wave.on i:nth-child(4) { animation-delay: 60ms; }
+@keyframes t-wave { 0%, 100% { height: 5px; } 50% { height: 17px; } }
+.mic.denied, .mic.unsupported { opacity: 0.55; }
+
+/* the words: the state is always named, then what was heard or done */
+.words { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; padding: 0 6px; overflow: hidden; white-space: nowrap; }
+.state { flex: none; font-size: 13px; color: var(--t-text-2); }
+.heard { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.heard.interim { color: var(--t-text-2); }
+.cmd { flex: 1; min-width: 0; width: 0; font: inherit; color: var(--t-text); background: none; border: 0; outline: 0; padding: 0 6px; display: none; }
+.cmd::placeholder { color: var(--t-text-2); }
+.capsule.typing .cmd { display: block; }
+.capsule.typing .heard { display: none; }
+.capsule.typing { outline: 2px solid var(--t-you-mark); outline-offset: 2px; }
+
+/* Stop: neutral, high contrast, always with its Esc hint */
+.stop { flex: none; display: flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px 0 10px; border-radius: 18px; background: var(--t-stop); color: var(--t-on-stop); font-weight: 600; }
+.stop svg { width: 14px; height: 14px; }
+.stop kbd { font: 500 11px/1 var(--t-font); padding: 2px 5px; border-radius: 5px; border: 1px solid currentColor; opacity: 0.75; }
+
+/* ---- the question card (the capsule, morphed) ---------------------------------------------------- */
+.card { animation: t-in 220ms ease-out 80ms both; }
+.card h2 { margin: 2px 4px 12px; font: 600 22px/1.2 var(--t-font); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  position: relative; min-height: 44px; min-width: 56px; padding: 8px 16px; border-radius: var(--t-chip-r);
+  font: 500 17px/1.2 var(--t-font); color: var(--t-text); background: var(--t-fill); border: 1px solid var(--t-hairline);
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+}
+.chip:hover { background: var(--t-fill-strong); }
+.chip[aria-checked='true'] { background: var(--t-you); border-color: var(--t-you); color: var(--t-on-you); }
+.chip .check { display: none; width: 16px; height: 16px; }
+.chip[aria-checked='true'] .check { display: block; }
+.card footer { display: flex; align-items: center; justify-content: space-between; margin: 12px 4px 2px; font-size: 13px; color: var(--t-text-2); }
+.skip { min-height: 44px; padding: 0 8px; margin: -12px -8px; font-size: 15px; color: var(--t-text-2); border-radius: 12px; text-decoration: underline; text-underline-offset: 3px; }
+.skip:hover { color: var(--t-text); }
+.card.pulse .chip { animation: t-pulse 520ms ease-in-out 2; }
+@keyframes t-pulse { 50% { background: var(--t-fill-strong); border-color: var(--t-you-mark); } }
+
+/* ---- the memory panel ---------------------------------------------------------------------------- */
+.memory { position: fixed; right: var(--t-edge); bottom: calc(var(--t-edge) + var(--t-capsule-h) + 12px); width: min(320px, calc(100% - 2 * var(--t-edge))); padding: var(--t-card-pad); border-radius: var(--t-card-r); }
+.memory h2 { margin: 2px 4px 10px; font: 600 17px/1.2 var(--t-font); }
+.memory ul { margin: 0; padding: 0; list-style: none; }
+.memory li { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 4px; border-top: 0.5px solid var(--t-hairline); }
+.memory li span { color: var(--t-text-2); font-size: 13px; }
+.memory li button { margin-left: auto; min-height: 44px; padding: 0 8px; color: var(--t-text-2); text-decoration: underline; text-underline-offset: 3px; border-radius: 12px; }
+.memory li button:hover { color: var(--t-text); }
+.memory p { margin: 0 4px 4px; font-size: 13px; color: var(--t-text-2); }
+
+/* ---- the inspector: a plain table, for the person tuning it ------------------------------------ */
+.inspector { position: fixed; top: var(--t-edge); right: var(--t-edge); width: min(580px, calc(100% - 2 * var(--t-edge))); max-height: calc(100% - 120px); overflow: auto; padding: 12px 14px; border-radius: 18px; font-size: 13px; }
+.inspector h2 { font: 600 13px/1.3 var(--t-font); margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.inspector button { padding: 3px 10px; border-radius: 999px; background: var(--t-fill); border: 1px solid var(--t-hairline); }
+.inspector table { width: 100%; border-collapse: collapse; margin: 0 0 10px; font: 12px/1.4 var(--t-mono); }
+.inspector th, .inspector td { text-align: left; vertical-align: top; padding: 2px 8px 2px 0; border-bottom: 0.5px solid var(--t-hairline); }
 .inspector th { font-weight: 600; white-space: nowrap; }
 .inspector .num { text-align: right; white-space: nowrap; }
-.inspector .used td { background: #eef6f0; }
-.inspector p { margin: 0 0 6px; font: var(--t-mono); overflow-wrap: anywhere; }
+.inspector .used td, .inspector .used th { background: var(--t-fill); }
+.inspector p { margin: 0 0 6px; font: 12px/1.4 var(--t-mono); color: var(--t-text-2); overflow-wrap: anywhere; }
 
-/* M2: voice */
-.bar button { font: inherit; white-space: nowrap; padding: 3px 8px; border: 1px solid var(--t-line); border-radius: 6px; background: #f5f6fa; cursor: pointer; }
-.bar button:disabled { opacity: 0.55; cursor: default; }
-.mic.listening { background: var(--t-listen); border-color: var(--t-listen); color: #fff; }
-.mic.listening::before { content: '● '; }
-.mic.paused { background: #fff4e0; border-color: var(--t-warn); color: var(--t-warn); }
-.mic.denied { border-color: var(--t-warn); color: var(--t-warn); }
-.heard.interim { color: var(--t-ink); font-style: italic; }
-
-.badge {
-  position: fixed; width: 28px; height: 28px; border-radius: 50%; border: 2px solid #fff;
-  background: var(--t-accent); color: #fff; font: 700 15px/1 system-ui, sans-serif; cursor: pointer;
-  box-shadow: 0 2px 8px rgb(0 0 0 / 0.35); pointer-events: auto;
+/* ---- accessibility floor ------------------------------------------------------------------------ */
+@media (prefers-reduced-motion: reduce) {
+  /* a static gradient frame, and crossfades instead of morphs */
+  .frame.agent::before, .frame.thinking::before { animation: none; }
+  .frame.thinking { opacity: 0.5; }
+  .capsule { transition: none; }
+  .ring, .ring.on { transform: none; transition: opacity 600ms ease-out; }
+  .wave.on i { animation: none; height: 12px; }
+  .card.pulse .chip { animation: none; border-color: var(--t-you-mark); }
+  button:active { transform: none; }
 }
-.badge[hidden] { display: none; }
-
-/* M3: delegate */
-.frame { position: fixed; inset: 0; border: 0 solid transparent; transition: border-color 0.2s, border-width 0.2s; }
-.frame.agent { border: 5px solid var(--t-accent); animation: t-drive 1.4s ease-in-out infinite; }
-.frame.waiting { border: 5px solid var(--t-warn); }
-@keyframes t-drive { 50% { border-color: rgb(59 91 219 / 0.35); } }
-.pill.agent { background: var(--t-accent); color: #fff; }
-.pill.waiting { background: #fff4e0; color: var(--t-warn); }
-.bar .stop { background: var(--t-listen); border-color: var(--t-listen); color: #fff; font-weight: 700; }
-.bar .stop[hidden] { display: none; }
-
-.trail, .narrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; pointer-events: auto; }
-.narrow[hidden] { display: none; }
-.narrow > span { font-weight: 600; background: var(--t-paper); padding: 2px 6px; border-radius: 6px; }
-.step { padding: 2px 8px; border-radius: 999px; background: var(--t-paper); border: 1px solid var(--t-line); box-shadow: 0 1px 4px rgb(0 0 0 / 0.12); }
-.step.memory { border-color: var(--t-ok); color: var(--t-ok); font-weight: 600; }
-.chip { font: inherit; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--t-accent); background: var(--t-paper); color: var(--t-accent); cursor: pointer; }
-.chip:hover { background: #eef1fb; }
-
-.card, .memory {
-  position: fixed; left: 50%; transform: translateX(-50%); bottom: 110px; width: min(520px, calc(100vw - 28px));
-  padding: 12px 14px; border: 1px solid var(--t-line); border-radius: 10px; background: var(--t-paper);
-  box-shadow: 0 8px 30px rgb(0 0 0 / 0.25); pointer-events: auto;
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  /* opaque material, stronger borders */
+  :host { --t-material: var(--t-material-solid); --t-backdrop: none; --t-hairline: rgba(0, 0, 0, 0.55); --t-text-2: #33333b; }
+  .material, .step, .narrow > span { border-width: 1px; }
 }
-.card[hidden], .memory[hidden] { display: none; }
-.card h2, .memory h2 { font: inherit; font-weight: 700; font-size: 15px; margin: 0 0 8px; }
-.card .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.card p, .memory p { margin: 10px 0 0; color: #555a66; }
-.card .skip, .memory button { font: inherit; padding: 2px 8px; border: 1px solid var(--t-line); border-radius: 6px; background: #f5f6fa; cursor: pointer; }
-.card.pulse .chip { animation: t-pulse 0.5s ease-in-out 2; }
-@keyframes t-pulse { 50% { background: var(--t-accent); color: #fff; } }
-.memory { bottom: 110px; left: auto; right: 14px; transform: none; width: 300px; }
-.memory ul { margin: 0; padding: 0; list-style: none; }
-.memory li { display: flex; gap: 6px; align-items: center; padding: 3px 0; }
-.memory li button { margin-left: auto; }
+@media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: dark), (prefers-contrast: more) and (prefers-color-scheme: dark) {
+  :host(:not([data-scheme='light'])) { --t-hairline: rgba(255, 255, 255, 0.6); --t-text-2: #d6d6de; }
+}
+@media (forced-colors: active) {
+  /* borders stay visible; the system picks the colours */
+  .material, .step, .chip, .icon, .stop, .badge, .narrow > span { border: 1px solid CanvasText; }
+  .frame.agent::before, .frame.thinking::before { background: none; -webkit-mask: none; mask: none; border: 4px solid Highlight; animation: none; }
+  .frame.waiting::before { border-color: CanvasText; }
+  .ring { border-color: Highlight; }
+  .chip[aria-checked='true'] { background: Highlight; color: HighlightText; }
+}

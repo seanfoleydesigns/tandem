@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tandem · overlay states</title>
+    <link rel="icon" href="data:," />
+    <style>
+      /* Dev-only review page. It is served by the Vite dev server and is not part of dist/agent.js. */
+      body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: #d5d5db; color: #16161a; }
+      header { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; padding: 12px 24px; background: #f4f4f7; border-bottom: 1px solid #c4c4cc; }
+      header h1 { font-size: 16px; margin: 0 12px 0 0; }
+      fieldset { border: 0; margin: 0; padding: 0; display: flex; align-items: center; gap: 6px; }
+      legend { float: left; margin-right: 6px; color: #55555f; }
+      label { display: inline-flex; align-items: center; gap: 4px; }
+      main { display: grid; grid-template-columns: repeat(auto-fill, minmax(620px, 1fr)); gap: 24px; padding: 24px; }
+      figure { margin: 0; }
+      figcaption { margin: 0 0 6px 2px; font-weight: 600; }
+      figcaption span { font-weight: 400; color: #55555f; }
+      /* A cell stands in for a browser viewport: it is the containing block for the overlay's fixed parts. */
+      .cell { position: relative; height: 430px; border-radius: 10px; overflow: hidden; contain: layout paint; transform: translateZ(0); border: 1px solid #b9b9c2; }
+      .cell.white { background: #ffffff; color: #111; }
+      .cell.black { background: #000000; color: #eee; }
+      .cell.split { background: linear-gradient(90deg, #ffffff 50%, #000000 50%); color: #888; }
+      .page { padding: 18px 22px; }
+      .page h2 { margin: 0 0 10px; font-size: 15px; }
+      .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+      .cards a { display: block; height: 96px; border-radius: 10px; border: 1px solid #8886; padding: 8px; font-size: 12px; color: inherit; text-decoration: none; background: #8881; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Tandem overlay states</h1>
+      <fieldset id="scheme"><legend>Scheme</legend>
+        <label><input type="radio" name="scheme" value="auto" checked> Follow system</label>
+        <label><input type="radio" name="scheme" value="light"> Light</label>
+        <label><input type="radio" name="scheme" value="dark"> Dark</label>
+      </fieldset>
+      <fieldset id="page"><legend>Page behind</legend>
+        <label><input type="radio" name="page" value="split" checked> White and black</label>
+        <label><input type="radio" name="page" value="white"> White</label>
+        <label><input type="radio" name="page" value="black"> Black</label>
+      </fieldset>
+    </header>
+    <main id="grid"></main>
+    <script type="module" src="/gallery.js"></script>
+  </body>
+</html>

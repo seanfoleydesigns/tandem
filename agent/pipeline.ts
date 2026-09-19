@@ -7,7 +7,7 @@ import { noMatches } from '../shared/notices';
 import { MATCH_SKIP, MATCH_UNCLEAR } from '../shared/questions';
 import { isStop, normalise, pickOneOrTwo, pickYesOrNo } from '../shared/speech';
 import type { ElementRow, MatchResponse } from '../shared/types';
-import { act, decideOnce, runLoop, type AskResult, type Decision, type Disambiguation, type LoopHooks, type Trace } from './loop';
+import { act, confirmationFor, decideOnce, runLoop, type AskResult, type Decision, type Disambiguation, type LoopHooks, type Trace } from './loop';
 import { deletePref, listPrefs, savePref } from './memory';
 import { takeSnapshot } from './snapshot';
 import type { Overlay } from './ui/overlay';
@@ -136,7 +136,7 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
     busy = true;
     try {
       const done = await act({ op: d.op, row: o.row, el: o.el, option: o.option, text: d.text }, hooks);
-      if (done.outcome.ok) overlay.trail(`Opened ${o.row.name}`);
+      if (done.outcome.ok) overlay.trail(confirmationFor(d.op, o.row, d.text ?? o.option?.label));
       const trace: Trace = {
         utterance: said, leash: 'single', step: 0, heard, speculative: 'none', rows: 0, snapshotMs: 0, t1: heard.final, t2: heard.final,
         t3: done.t3, settleMs: done.settleMs, winner: o.line, rowNames: new Map(),
@@ -152,7 +152,7 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
   async function runTask(goal: string, heard: Trace['heard']): Promise<Trace> {
     overlay.narrow(undefined);
     narrow = [];
-    overlay.showStatus(`Task: “${goal}”`, 'ok');
+    overlay.showStatus(goal, 'ok');
     const trace = await runLoop({ goal, leash: 'task', maxSteps: MAX_STEPS, heard, signal: abort!.signal }, hooks);
     handBack(trace);
     return trace;
@@ -195,7 +195,7 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
       // Remember only what is a fact about the user (a size that must fit), never a taste like brand or colour.
       const remember = (personal[group.key] ?? 0) >= SAVE_MIN;
       if (remember) hooks.savePref(group.label, answer.row.name);
-      overlay.trail(`${group.label}: ${answer.row.name}${remember ? ' (saved)' : ''}`);
+      overlay.trail(remember ? `${group.label} ${answer.row.name}. I'll remember that.` : confirmationFor('CLICK', answer.row));
     } finally {
       busy = false;
       overlay.setMode('user');
@@ -207,7 +207,7 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
 
   // Never silent: when nothing was done in drive mode, say why, in the capsule and by voice.
   function explain(trace: Trace) {
-    if (trace.result === 'ignored' && trace.why === 'not_for_me') return overlay.showStatus(`“${trace.utterance}” did not sound like it was for me.`, 'unsure'); // shown, not spoken
+    if (trace.result === 'ignored' && trace.why === 'not_for_me') return overlay.showStatus("That didn't sound like it was for me.", 'unsure'); // shown, not spoken
     const text = trace.result === 'error' ? "I couldn't reach the model."
       : trace.result === 'failed' ? "I couldn't do that here."
       : trace.result === 'ignored' && trace.why === 'not_found' ? "I can't find that on this page."
@@ -226,7 +226,7 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
       overlay.setMode('user');
       if (!yes) return overlay.showStatus(`Left ${c.name} alone.`, 'ok');
       void act({ op: c.op, row: c.option.row, el: c.option.el, option: c.option.option }, hooks).then((done) => {
-        if (done.outcome.ok) overlay.trail(`Clicked ${c.name} (you confirmed)`);
+        if (done.outcome.ok) overlay.trail(`Pressed ${c.name}, as you confirmed`);
         else overlay.showStatus("I couldn't do that here.", 'unsure');
       });
     };
@@ -251,7 +251,7 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
       pending = undefined; // anything else is a new command
       overlay.badges(undefined);
     }
-    if (busy) { overlay.showStatus(`“${text}” ignored: still working. Say stop to halt.`, 'unsure'); return undefined; }
+    if (busy) { overlay.showStatus('Still working. Say stop to take over.', 'unsure'); return undefined; }
     const chip = narrow.find((g) => [g.key, `narrow by ${g.key}`, `by ${g.key}`].includes(normalise(text)));
     if (chip) { void narrowBy(chip); return undefined; }
 
@@ -287,10 +287,11 @@ export function createPipeline(overlay: Overlay, getVoice: () => Voice) {
     // The command bar does everything voice does.
     typed: (text: string) => handle(text, { final: performance.now() }),
 
-    onSpeechStart: warm,
+    onSpeechStart() { warm(); overlay.wave(); },
 
     onInterim(text: string) {
       overlay.showInterim(text);
+      overlay.wave();
       warm();
       if (swallowFinal) return;
       if (isStop(text)) { swallowFinal = true; interimText = ''; lastInterimAt = undefined; return stop('heard mid-sentence'); }

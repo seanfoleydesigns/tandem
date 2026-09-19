@@ -3,7 +3,7 @@
 import { candidates, groupsByLabel, rowLine, type Candidates } from '../shared/candidates';
 import { MAX_TASK_MS, type LabelStyle } from '../shared/config';
 import { fitPool, rankFits } from '../shared/fits';
-import { controlGroups, labelKey, unsetGroups, type ControlGroup } from '../shared/groups';
+import { cleanLabel, controlGroups, labelKey, unsetGroups, type ControlGroup } from '../shared/groups';
 import { denied, resolve, type Resolution, type Why } from '../shared/policy';
 import { planSlate, setOptions } from '../shared/slate';
 import { normalise } from '../shared/speech';
@@ -64,7 +64,7 @@ export type LoopHooks = {
   overlay: Element;
   labelStyle: () => LabelStyle;
   pageFocus: () => Element | null;
-  onRing: (rect: DOMRect) => void;
+  onRing: (rect: DOMRect, radius?: number) => void;
   onStep: (trace: Trace) => void; // after every step, for the inspector
   onTrail: (text: string, tone?: 'memory') => void; // what was done
   onDriving: () => void; // a second step is beginning: the agent is visibly driving
@@ -147,10 +147,21 @@ export async function act(
 const VERB: Partial<Record<Operation, string>> = { SCROLL_DOWN: 'Scrolled down', SCROLL_UP: 'Scrolled up', GO_BACK: 'Went back' };
 function trailText(op: Operation, row?: ElementRow, value?: string): string {
   if (VERB[op]) return VERB[op]!;
-  if (op === 'TYPE') return `Typed "${value}"`;
-  if (op === 'SELECT') return `Chose ${value}`;
-  return row?.group && ['checkbox', 'radio', 'switch'].includes(row.role) ? `${row.group.replace(/\s*\(.*\)/, '')}: ${row.name}` : `Opened ${row?.name ?? ''}`;
+  if (op === 'TYPE') return /search/i.test(`${row?.role} ${row?.name}`) ? `Searched for ${value}` : `Typed ${value}`;
+  if (op === 'SELECT') return /sort/i.test(row?.name ?? '') ? `Sorted by ${value}` : `Chose ${value}`;
+  if (row?.role === 'checkbox' || row?.role === 'switch') return `${/(^|, )checked/.test(row.state ?? '') ? 'Unchecked' : 'Checked'} ${row.name}`;
+  if (row?.role === 'radio') return `Chose ${cleanLabel(row.group ?? '').toLowerCase()} ${row.name}`.replace(/\s+/g, ' ');
+  return `${row?.role === 'link' ? 'Opened' : 'Pressed'} ${shortName(row?.name)}`;
 }
+
+// A product card's name runs on ("Tidewater Boardwalk Tan sneakers $58"): drop a trailing price and keep it short.
+function shortName(name = ''): string {
+  const n = name.replace(/\s*[$€£]\s?\d[\d.,]*\s*$/, '');
+  return n.length > 40 ? `${n.slice(0, 40).replace(/\s+\S*$/, '')}…` : n;
+}
+
+// Plain past-tense words for what was done. No arrows, no quotes.
+export const confirmationFor = trailText;
 
 export async function runLoop(
   input: { utterance?: string; goal?: string; leash: Leash; maxSteps: number; heard: Heard; prepared?: Promise<Decision>; specMissed?: boolean; signal?: AbortSignal },
@@ -263,10 +274,10 @@ export async function runLoop(
       waited += performance.now() - t;
       if (answer.type === 'stopped') return end('stopped', 'stopped while waiting for an answer');
       if (answer.type === 'giveup') return end('stuck', `could not understand the answer to "Which ${group.label}?"`);
-      if (answer.type === 'skip') { hooks.onTrail(`${group.label}: skipped`); hooks.onStep({ ...trace, result: 'asked' }); continue; }
+      if (answer.type === 'skip') { hooks.onTrail(`Skipped ${group.label.toLowerCase()}`); hooks.onStep({ ...trace, result: 'asked' }); continue; }
       const el = nodes.get(answer.row.id);
       const done = await act({ op: 'CLICK', row: answer.row, el }, hooks, history);
-      if (done.outcome.ok) { hooks.savePref(group.label, answer.row.name); hooks.onTrail(`${group.label}: ${answer.row.name} (saved)`); }
+      if (done.outcome.ok) { hooks.savePref(group.label, answer.row.name); hooks.onTrail(`${group.label} ${answer.row.name}. I'll remember that.`); }
       trace = { ...trace, t3: done.t3, settleMs: done.settleMs, winner: rowLine(answer.row), result: done.outcome.ok ? 'acted' : 'failed', note: `${next.reason}; the user answered "${answer.row.name}"` };
       hooks.onStep(trace);
       continue;
@@ -291,7 +302,7 @@ export async function runLoop(
       const row = rowsById.get(decision.snap.snapshot.focused ?? '');
       if (row) trace.winner = rowLine(row);
       done = await act({ op: 'TYPE', row, el: row && nodes.get(row.id), text: next.text, append: true }, hooks, history);
-      if (done.outcome.ok) hooks.onTrail(`Typed "${next.text}"`);
+      if (done.outcome.ok) hooks.onTrail(`Typed ${next.text}`);
     } else {
       const chosen = next.target ? optionFor(next.target) : undefined;
       if (task && chosen && denied(chosen.row.name, input.goal ?? '')) return end('yours', `${trace.note}; "${chosen.row.name}" is on the deny-list`);
@@ -326,7 +337,7 @@ async function applyMemory(snap: Snap, hooks: LoopHooks, history: ActionRecord[]
     if (!row) continue;
     const done = await act({ op: 'CLICK', row, el: snap.nodes.get(row.id), usedPref: `${group.label}: ${pref.value}` }, hooks, history);
     if (!done.outcome.ok) continue;
-    hooks.onTrail(`Used your saved ${group.label.toLowerCase()}: ${row.name}`, 'memory');
+    hooks.onTrail(`Used your saved ${group.label.toLowerCase()}, ${row.name}`, 'memory');
     return { ...done, line: rowLine(row), note: `saved preference ${group.label} = ${pref.value}, applied in code with no model call` };
   }
   return undefined;
@@ -352,7 +363,7 @@ async function cleanSlate(goal: string, hooks: LoopHooks, history: ActionRecord[
   }
 
   const plan = planSlate(set, answers, hooks.prefs());
-  for (const kept of plan.keptPrefs) hooks.onTrail(`Kept your saved ${kept.group.toLowerCase()}: ${kept.option}`, 'memory');
+  for (const kept of plan.keptPrefs) hooks.onTrail(`Kept your saved ${kept.group.toLowerCase()}, ${kept.option}`, 'memory');
   let cleared = 0;
   for (const o of plan.clear) {
     if (signal?.aborted) break;

@@ -4,7 +4,7 @@ import { placement } from '../shared/ordinals';
 export type ExecResult = { ok: boolean; reason?: string };
 
 // Called once the target has passed its checks, just before the action, with where it is on screen.
-export type OnReady = (rect: DOMRect) => void;
+export type OnReady = (rect: DOMRect, radius: number) => void;
 
 const SETTLE_QUIET_MS = 120;
 const SETTLE_MAX_MS = 800;
@@ -21,7 +21,7 @@ function ready(el: Element, overlay: Element, onReady?: OnReady): ExecResult {
   // Off screen, or tucked under a sticky header: bring it to the middle of the viewport first.
   if (!onScreen(el) || !reachable(el, overlay)) el.scrollIntoView({ block: 'center', behavior: 'instant' });
   if (!reachable(el, overlay)) return { ok: false, reason: 'the element is covered by something else' };
-  onReady?.(el.getBoundingClientRect());
+  onReady?.(el.getBoundingClientRect(), parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0);
   return { ok: true };
 }
 
