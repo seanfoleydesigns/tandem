@@ -43,10 +43,12 @@ const PREAMBLE =
 const ask = (question: string) => `${PREAMBLE} ${question}`;
 
 export function kindQuestion(opts: { hasPending: boolean; textboxFocused: boolean }): ChoiceQuestion {
+  // Worded around who chooses the steps. Searching is named, because "search for running shoes" read as TASK.
   const criteria: Record<string, string> = {
     ACTION:
-      'One immediate browser action, such as clicking, opening, checking, selecting, sorting, scrolling, going back, or typing or searching for the exact words given.',
-    TASK: 'A goal that needs several actions and leaves the steps to the assistant, such as finding a product that meets a description, or comparing products.',
+      'The user names the specific thing to do on the page right now: click, open, check, select, sort, scroll, go back, or type or search for given words.',
+    TASK:
+      'The user describes an outcome they want and leaves the steps to the assistant, for example "find me…", "get me…", "I need…", or "show me options for…".',
   };
   if (opts.hasPending) criteria.ANSWER = 'A reply to the question described in `pending`.';
   if (opts.textboxFocused) criteria.DICTATION = 'Words meant to be entered as they are into the focused text field.';
@@ -93,7 +95,7 @@ export function targetQuestions(c: Candidates, style: LabelStyle): Partial<Recor
       type: 'choice',
       instructions: ask(
         'Which element in `snapshot.rows` should be clicked to carry out `utterance`? ' +
-          'A position word in `utterance`, such as "first", "second" or "third", means the element described with that word followed by "visible". ' +
+          'An ordinal word in `utterance`, such as "first", "second" or "third", means the element described with that word followed by "visible". ' +
           'Choose `none` if no listed element fits.',
       ),
       criteria: rowCriteria(c.click.map((r) => ({ label: r.id, text: describeRow(r) })), style),
@@ -138,4 +140,23 @@ export function typedSpanQuestion(spans: string[]): ChoiceQuestion {
     ),
     criteria,
   };
+}
+
+// --- /api/fits ---------------------------------------------------------------------------------
+// A Choice is relative: it names one winner even when several elements fit equally well. A Noul is
+// absolute, so one Noul per candidate tells us which ones fit. State key: `utterance`.
+
+export type NoulQuestion = { type: 'noul'; instructions: string };
+
+export function fitQuestions(rows: { label: string; text: string }[]): Record<string, NoulQuestion> {
+  const out: Record<string, NoulQuestion> = {};
+  for (const r of rows) {
+    out[r.label] = {
+      type: 'noul',
+      instructions:
+        'Could `utterance` be referring to this page element: "' + r.text + '"? ' +
+        'Answer yes for every element that matches what the user described, even when several elements match.',
+    };
+  }
+  return out;
 }

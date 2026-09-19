@@ -122,3 +122,57 @@ What this says:
 - Speculative heads behave well: with "scroll down", click_target says `none` at 0.96; with "open the second one", typed_span says `(none)` at 0.90.
 - Operation TYPE is the least confident of the six (0.57 to 0.73): CLICK on the "Running" category link is a fair rival for "search for running shoes".
 - Confidence tracked the top probability closely on peaked heads here (0.99 / 1.00, 0.75 / 0.76), and sat lower on spread ones (0.35 confidence for a 0.51 top).
+
+## 2026-09-19 · M2: voice
+
+Started 14:15, finished 14:30 EDT (about 15 min against a 25 min box). Real-voice acceptance is Sean's to run in Chrome: the Browser pane I test in blocks the microphone. Everything below was checked with the dev simulator, which feeds the same pipeline as the recognizer.
+
+**Built**
+
+- `agent/voice.ts`: `webkitSpeechRecognition`, continuous with interim results, restart on `onend` unless the mic toggle is off, `no-speech` / `aborted` quiet, `network` quiet with a back-off, `not-allowed` shown as "Mic blocked". Speech output through `speechSynthesis`, mutable. Echo guard: recognition is aborted while the agent speaks and for 250 ms after, results arriving under the guard are dropped, and a timer releases the guard if an engine never fires `onend`.
+- `agent/pipeline.ts`: one path for typed commands, the recognizer and the simulator. Order for every transcript: stop (code), "one" / "two" (code), then the loop (Jev). Warm-up on `speechstart`, on every interim and on typing, at most every 3 s.
+- Stop fast path (`shared/speech.ts`, unit tested): "stop", "cancel", "wait", "hold on", also mid-sentence on an interim ("scroll down… stop"). It aborts any in-flight decide, clears badges, cancels speech and swallows the final transcript of the same utterance. No model call. Esc does the same.
+- Speculative decide: when an interim transcript has not changed for 300 ms, fire `/api/decide`. If the final transcript matches after normalising (case, punctuation, spaces), act on that answer; otherwise abort it and decide again. The trace records hit, miss or not fired.
+- `kind` routing is on. TASK needs probability 0.7 or more (`TASK_MIN`); below that the single leash runs. A routed task only reports itself for now: delegate mode is M3.
+- Dictation: with a text field focused and kind DICTATION, the transcript is appended as it is, with no submit.
+- Disambiguation: badges "1" and "2" that follow their elements; "one", "two" (and "first", "the second one", "too"…) or a tap resolves in code; anything else cancels and is treated as a new command. The agent says "One or two?".
+- Fit check, `/api/fits` and `shared/fits.ts`: see below.
+- Dev simulator: `await __tandem.say('open the second one', { interims: [...], interimGapMs: 150, finalDelayMs: 600 })` returns a summary of the trace. Also `__tandem.speak(text)` and `__tandem.guarded()`. Dev only; `dist/agent.js` contains no `__tandem`.
+- Inspector: final transcript → action, last interim change → action, last interim → final, whether the speculative decide was used and how early it fired, decide round trip with the Jev share, snapshot · act · settle, and the fit check when one ran.
+- 76 unit tests (added: speech, fits, TASK gate).
+
+**Acceptance, by simulated voice (interims one word at a time, 150 ms apart; final 600 ms after the last interim)**
+
+| Check | Result |
+|---|---|
+| The six M1 commands | All pass. Speculative decide hit six of six. Final → action 0 to 2 ms. Last interim → action 608 to 614 ms, of which 600 ms is the simulated finalisation delay. |
+| Final differs from the last interim ("scroll town" → "scroll down") | Speculative answer dropped, decided again: final → action 189 ms, last interim → action 799 ms. |
+| Final arrives 150 ms after the last interim (before the 300 ms window) | Nothing speculative fired: final → action 281 ms, last interim → action 435 ms. |
+| "stop" on an interim, mid-sentence | Halted at once, page did not scroll, no model call, final transcript swallowed. |
+| "open the white one" with 8 white shoes | Badges 1 and 2 on the first two white shoes; "two" opened Arco Plaza Low in 2 ms, in code. **Needed the fit check, see below.** |
+| Never reacts to its own speech | While "One or two?" was being spoken, `__tandem.say()` was dropped by the echo guard; the guard then released. |
+| Dictation | Search box focused, "blue suede shoes" → typed as it is, not submitted (DICTATION 0.77). "with a leather sole" → appended (DICTATION won at only 0.38). "scroll down" with the field focused → still a command. |
+| kind routing | "find me white shoes", "I need black boots in my size", "show me options for running": TASK 1.00. "search for running shoes": ACTION 0.76 (it was TASK 0.95 before the rewording). "open the cart": ACTION 1.00. "um I think so yeah": NOT_FOR_ME. |
+| Mic toggle | API present. The Browser pane blocks the microphone, so the toggle showed "Mic blocked" quietly. Listening, restart and real timings are for the Chrome run. |
+
+**Honest reading of the two timings.** With a speculative hit, the action fires within a few milliseconds of the final transcript, so "final → action" is near zero and no longer says much. "Last interim change → action" is then almost exactly the recognizer's own finalisation delay, which we do not control; the simulator's 600 ms is a guess, and Chrome's real figure is the number to get from the live run. Without a hit, the cost is one decide: about 190 to 280 ms after the final transcript.
+
+**What broke, and what changed**
+
+1. **An ambiguous command did not look ambiguous.** "open the white one" with eight white shoes: Jev gave one shoe 0.46 to 0.65, put 0.31 to 0.48 on `none`, and gave the other seven about 0.00. It does not split a Choice across equally good candidates. The confidence (0.46 to 0.63) sat right on the 0.5 threshold, so the agent usually just opened the first shoe, and the runner-up was the White checkbox, so "top two by probability" would have badged the wrong thing. I tried wording first (told it "one" is not a position word: no change) and state (reversed the cards, removed ordinals, `ids` labels: same shape).
+   Fix: the docs' own pattern, a Choice to pick and Nouls to decide. When a target is uncertain in drive mode, one follow-up request asks a yes/no question per candidate with the same role and group as the preferred one ("Could `utterance` be referring to this page element…? Answer yes for every element that matches…"). The eight white shoes scored 0.59 to 0.74; near-ties keep reading order, so badges land on the first two. One fit: act. None: "?". The follow-up took 145 to 184 ms and only runs when the agent is about to ask anyway.
+   With that safety net, `TARGET_MIN` went from 0.5 to 0.75: clear commands in M1 and M2 scored 0.92 and up, ambiguous ones 0.65 and below, and a false alarm now costs one short request instead of a wrong click. This is a threshold change made after wording and state were tried, with the numbers above as the evidence.
+2. The first fit pool force-included the policy's own two candidates, so badge 1 landed on the already-checked White checkbox (Noul 0.67). The pool now holds only candidates like the preferred one.
+3. kind wording: rebuilt around who chooses the steps, with searching named under ACTION. "search for running shoes" moved from TASK 0.95 to ACTION 0.76 to 0.77.
+4. The trace reported a speculative miss as "not fired". Fixed; the inspector now says which.
+
+**Surprises about Jev**
+
+- The "one winner plus `none`" shape for equally good candidates is the big one. It means rule 4 (top probability under 0.55, candidates sharing a group) will rarely fire from a split distribution alone. M3's "uncertainty becomes a question" should lean on the fit check too.
+- Jev matched the spoken "size ten and a half" to the "10.5" size chip and clicked it (my test phrase for dictation was read as a command, fairly). Good news for `/api/match` in M3.
+- Nouls over near-identical candidates are consistent but not high: 0.59 to 0.74 for eight equally white shoes. `FIT_MIN` 0.5 works here; it is a number to watch.
+
+**Open items**
+
+- DICTATION routes on the top choice with no floor, and once won at 0.38. If it misfires with real speech, give it a minimum like TASK's.
+- Real recognizer behaviour (restart gaps, finalisation delay, how often the final differs from the last interim) is unmeasured until the Chrome run.

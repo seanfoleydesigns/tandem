@@ -22,32 +22,41 @@ function headRow(name: string, head: Head, used: boolean, names: Map<string, str
     <td class="num">${head.confidence.toFixed(2)}</td><td class="num">${top.toFixed(2)}</td><td>${top3}</td></tr>`;
 }
 
-export function renderInspector(trace: Trace | undefined, labelStyle: LabelStyle, rowNames: Map<string, string>): string {
+export function renderInspector(trace: Trace | undefined, labelStyle: LabelStyle): string {
   const title = `<h2>Tandem inspector <button data-action="toggle-style" title="Switch label style for the next decision">label style: ${labelStyle}</button></h2>`;
-  if (!trace) return `${title}<p>No decision yet. Press / and type a command.</p>`;
+  if (!trace) return `${title}<p>No decision yet. Press / and type a command, or turn the mic on.</p>`;
 
   const r = trace.response;
-  const { t0, t1, t2, t3 } = trace.t;
+  const { heard, t1, t2, t3 } = trace;
+  const lead = Math.round(heard.final - t1);
+  const speculative =
+    trace.speculative === 'hit' ? `used: decide was fired ${lead} ms before the final transcript`
+    : trace.speculative === 'miss' ? 'fired, but the final transcript differed or the call failed; decided again'
+    : 'not fired';
   const summary = `
     <table>
       <tr><th>heard</th><td>${esc(trace.utterance)}</td></tr>
       <tr><th>result</th><td>${esc(trace.result)}${trace.resolution ? ` · ${esc(trace.resolution.type)}` : ''}</td></tr>
       <tr><th>policy</th><td>${esc(trace.note)}</td></tr>
       ${trace.winner ? `<tr><th>winning row</th><td>${esc(trace.winner)}</td></tr>` : ''}
-      ${trace.candidates ? `<tr><th>top two</th><td>${trace.candidates.map(esc).join('<br>')}</td></tr>` : ''}
+      ${trace.disambiguation ? `<tr><th>one or two</th><td>${trace.disambiguation.options.map((o, i) => `${i + 1}: ${esc(o.line)}`).join('<br>')}</td></tr>` : ''}
+      ${trace.fit ? `<tr><th>fit check</th><td>${trace.fit.asked} candidates asked, ${trace.fit.ms} ms, ${trace.fit.fits.length ? 'fit: ' + trace.fit.fits.map((f) => `${esc(f.line.split(' · ')[1] ?? f.line)} ${f.noul.toFixed(2)}`).join(', ') : 'none fit'}</td></tr>` : ''}
       <tr><th>model</th><td>${esc(r?.model ?? '–')} · label style ${esc(r?.labelStyle ?? labelStyle)} · ${trace.rows} rows · ${r ? `${r.usage.input_tokens} tokens in` : ''}</td></tr>
     </table>
     <table>
-      <tr><th>t1 − t0 snapshot</th><td class="num">${ms(t0, t1)}</td><th>t2 − t1 decide</th><td class="num">${ms(t1, t2)}</td></tr>
-      <tr><th>of which Jev</th><td class="num">${r ? `${r.ms} ms` : '–'}</td><th>t3 − t2 act</th><td class="num">${ms(t2, t3)}</td></tr>
-      <tr><th>t3 − t0 total</th><td class="num"><b>${ms(t0, t3)}</b></td><th>settle after t3</th><td class="num">${trace.settleMs ?? '–'}${trace.settleMs === undefined ? '' : ' ms'}</td></tr>
+      <tr><th>final transcript → action</th><td class="num"><b>${ms(heard.final, t3)}</b></td></tr>
+      <tr><th>last interim change → action</th><td class="num"><b>${ms(heard.lastInterim, t3)}</b></td></tr>
+      <tr><th>last interim change → final transcript</th><td class="num">${ms(heard.lastInterim, heard.final)}</td></tr>
+      <tr><th>speculative decide</th><td>${speculative}</td></tr>
+      <tr><th>decide round trip (t2 − t1)</th><td class="num">${ms(t1, t2)}, of which Jev ${r ? `${r.ms} ms` : '–'}</td></tr>
+      <tr><th>snapshot · act · settle</th><td class="num">${trace.snapshotMs} ms · ${ms(Math.max(t2, heard.final), t3)} · ${trace.settleMs ?? '–'} ms</td></tr>
     </table>`;
   if (!r) return title + summary;
 
   const op = r.heads.operation.choice;
-  const used = new Set(['operation', ...(HEAD_FOR_OP[op] ?? [])]);
+  const used = new Set(['kind', 'operation', ...(HEAD_FOR_OP[op] ?? [])]);
   const heads = Object.entries(r.heads)
-    .map(([name, head]) => headRow(name, head as Head, trace.result === 'acted' && used.has(name), rowNames))
+    .map(([name, head]) => headRow(name, head as Head, trace.result === 'acted' && used.has(name), trace.rowNames))
     .join('');
   return `${title}${summary}
     <table><tr><th>head</th><th>choice</th><th class="num">confidence</th><th class="num">top p</th><th>top three</th></tr>${heads}</table>

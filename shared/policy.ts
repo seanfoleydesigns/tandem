@@ -3,7 +3,7 @@
 // M1 covers rules 1 to 5 and 8. Rules 6 (deny-list) and 7 (loop detection) arrive in M3.
 
 import { NONE, NO_SPAN } from './candidates';
-import { AMBIG_MASS, AMBIG_TOP, OP_MIN, TARGET_MIN } from './config';
+import { AMBIG_MASS, AMBIG_TOP, OP_MIN, TARGET_MIN, TASK_MIN } from './config';
 import type { Head, Heads, Leash, Operation } from './types';
 
 export type Resolution =
@@ -66,7 +66,9 @@ export function resolve(heads: Heads, ctx: PolicyContext): Resolution {
     const why = `kind ${k} (conf ${f(heads.kind.confidence)})`;
     if (k === 'STOP') return { type: 'HandBack', outcome: 'stopped', reason: why };
     if (k === 'ANSWER') return { type: 'Answer', reason: why };
-    if (k === 'TASK') return { type: 'StartTask', goal: ctx.utterance ?? '', reason: why };
+    // Biased toward ACTION: a task starts only when TASK's own probability reaches TASK_MIN.
+    const pTask = heads.kind.probabilities.TASK ?? 0;
+    if (k === 'TASK' && pTask >= TASK_MIN) return { type: 'StartTask', goal: ctx.utterance ?? '', reason: `${why}, TASK ${f(pTask)} ≥ TASK_MIN ${TASK_MIN}` };
     if (k === 'DICTATION') return { type: 'Dictate', text: ctx.utterance ?? '', reason: why };
     if (k === 'NOT_FOR_ME') return { type: 'Ignore', reason: why };
   }

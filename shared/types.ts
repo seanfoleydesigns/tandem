@@ -90,3 +90,7 @@ export type HealthResponse =
   | { ok: false; status?: number; error: string };
 
 export type ApiError = { ok: false; status?: number; error: string };
+
+// Fit check: which of these candidates could the utterance be referring to? One Noul each.
+export type FitsRequest = { utterance: string; rows: ElementRow[] };
+export type FitsResponse = { model: string; ms: number; usage: JevUsage; fits: Record<string, number> };

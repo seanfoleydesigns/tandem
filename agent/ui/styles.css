@@ -6,6 +6,7 @@
   --t-accent: #3b5bdb;
   --t-ok: #1f7a4d;
   --t-warn: #b35c00;
+  --t-listen: #c2255c;
   --t-font: 13px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif;
   --t-mono: 12px/1.35 ui-monospace, 'Cascadia Mono', Consolas, monospace;
   all: initial;
@@ -52,3 +53,19 @@
 .inspector .num { text-align: right; white-space: nowrap; }
 .inspector .used td { background: #eef6f0; }
 .inspector p { margin: 0 0 6px; font: var(--t-mono); overflow-wrap: anywhere; }
+
+/* M2: voice */
+.bar button { font: inherit; white-space: nowrap; padding: 3px 8px; border: 1px solid var(--t-line); border-radius: 6px; background: #f5f6fa; cursor: pointer; }
+.bar button:disabled { opacity: 0.55; cursor: default; }
+.mic.listening { background: var(--t-listen); border-color: var(--t-listen); color: #fff; }
+.mic.listening::before { content: '● '; }
+.mic.paused { background: #fff4e0; border-color: var(--t-warn); color: var(--t-warn); }
+.mic.denied { border-color: var(--t-warn); color: var(--t-warn); }
+.heard.interim { color: var(--t-ink); font-style: italic; }
+
+.badge {
+  position: fixed; width: 28px; height: 28px; border-radius: 50%; border: 2px solid #fff;
+  background: var(--t-accent); color: #fff; font: 700 15px/1 system-ui, sans-serif; cursor: pointer;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.35); pointer-events: auto;
+}
+.badge[hidden] { display: none; }

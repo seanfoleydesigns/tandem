@@ -18,6 +18,13 @@ describe('rule 1: kind', () => {
   it('is ignored until kind routing is switched on (M1)', () => {
     expect(resolve(heads, drive).type).toBe('Act');
   });
+  it('is biased toward ACTION: TASK routes only when its own probability reaches TASK_MIN', () => {
+    const on = { ...drive, useKind: true, utterance: 'search for running shoes' };
+    const weakTask = head({ TASK: 0.51, ACTION: 0.45, NOT_FOR_ME: 0.04 }, 0.35);
+    expect(resolve({ ...heads, kind: weakTask }, on)).toMatchObject({ type: 'Act', op: 'CLICK' });
+    const strongTask = head({ TASK: 0.7, ACTION: 0.3 }, 0.4);
+    expect(resolve({ ...heads, kind: strongTask }, on).type).toBe('StartTask');
+  });
   it('routes TASK, STOP and NOT_FOR_ME when switched on', () => {
     const on = { ...drive, useKind: true, utterance: 'find me white shoes' };
     expect(resolve(heads, on)).toMatchObject({ type: 'StartTask', goal: 'find me white shoes' });
@@ -78,7 +85,7 @@ describe('rule 4: ambiguity inside one group becomes a question', () => {
     expect(resolve(split, { ...drive, groups })).toMatchObject({ type: 'Disambiguate', candidates: ['e1', 'e2'] });
   });
   it('reads the top probability, so a peaked head is not ambiguous even with modest confidence', () => {
-    const peaked: Heads = { operation: sure('CLICK'), click_target: head({ e1: 0.7, e2: 0.25, none: 0.05 }, 0.55) };
+    const peaked: Heads = { operation: sure('CLICK'), click_target: head({ e1: 0.7, e2: 0.25, none: 0.05 }, 0.78) };
     expect(resolve(peaked, { ...task, groups })).toMatchObject({ type: 'Act', target: 'e1' });
   });
   it('does not ask when the candidates span groups', () => {

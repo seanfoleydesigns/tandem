@@ -48,16 +48,20 @@ function isSearchField(el: HTMLInputElement): boolean {
 }
 
 // Set the value through the native setter so framework-controlled inputs see the change.
-export function type(el: Element, text: string, overlay: Element, onReady?: OnReady): ExecResult {
+// Dictation appends to what is already there and does not submit.
+export function type(
+  el: Element, text: string, overlay: Element, onReady?: OnReady, opts: { append?: boolean; submit?: boolean } = {},
+): ExecResult {
   const check = ready(el, overlay, onReady);
   if (!check.ok) return check;
   const input = el as HTMLInputElement;
   const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
   input.focus();
-  Object.getOwnPropertyDescriptor(proto, 'value')!.set!.call(input, text);
+  const value = opts.append && input.value ? `${input.value.trimEnd()} ${text}` : text;
+  Object.getOwnPropertyDescriptor(proto, 'value')!.set!.call(input, value);
   input.dispatchEvent(new Event('input', { bubbles: true }));
   input.dispatchEvent(new Event('change', { bubbles: true }));
-  if (isSearchField(input)) {
+  if (opts.submit !== false && isSearchField(input)) {
     // A synthetic Enter does not submit a form, so submit it the way Enter would.
     if (input.form) input.form.requestSubmit();
     else for (const t of ['keydown', 'keyup']) input.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', bubbles: true }));

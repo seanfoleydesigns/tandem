@@ -1,7 +1,7 @@
 import express from 'express';
 import { HEALTH_STATE, healthQuestions } from '../shared/questions';
-import type { DecideRequest, HealthResponse } from '../shared/types';
-import { decide, decideRequest } from './decide';
+import type { DecideRequest, FitsRequest, HealthResponse } from '../shared/types';
+import { decide, decideRequest, fits, fitsRequest } from './decide';
 import { ask, describeError, warm } from './jev';
 
 const PORT = 8787;
@@ -38,6 +38,20 @@ app.post('/api/decide', async (req, res) => {
   }
   try {
     res.json(await decide(parsed.data as DecideRequest));
+  } catch (err) {
+    res.status(502).json({ ok: false, ...describeError(err) });
+  }
+});
+
+// Follow-up to an uncertain target: which candidates fit the utterance? One Noul each.
+app.post('/api/fits', async (req, res) => {
+  const parsed = fitsRequest.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') });
+    return;
+  }
+  try {
+    res.json(await fits(parsed.data as FitsRequest));
   } catch (err) {
     res.status(502).json({ ok: false, ...describeError(err) });
   }

@@ -1,9 +1,9 @@
 import { z } from 'zod';
-import { candidates, rowLine } from '../shared/candidates';
-import { DECIDE_RETRIES, DECIDE_TIMEOUT_MS, LABEL_STYLE } from '../shared/config';
-import { kindQuestion, operationQuestionSingle, targetQuestions, typedSpanQuestion, type ChoiceQuestion } from '../shared/questions';
+import { candidates, describeRow, rowLine } from '../shared/candidates';
+import { DECIDE_RETRIES, DECIDE_TIMEOUT_MS, FIT_POOL, LABEL_STYLE } from '../shared/config';
+import { fitQuestions, kindQuestion, operationQuestionSingle, targetQuestions, typedSpanQuestion, type ChoiceQuestion } from '../shared/questions';
 import { wordSpans } from '../shared/spans';
-import type { DecideRequest, DecideResponse, Head, Heads } from '../shared/types';
+import type { DecideRequest, DecideResponse, FitsRequest, FitsResponse, Head, Heads } from '../shared/types';
 import { ask } from './jev';
 
 const row = z.object({
@@ -67,4 +67,15 @@ export async function decide(req: DecideRequest): Promise<DecideResponse> {
     heads[name] = { choice: a.choice, confidence: a.confidence, probabilities: a.probabilities };
   }
   return { model: r.model, ms: r.ms, usage: r.usage, labelStyle, heads: heads as Heads };
+}
+
+export const fitsRequest = z.object({ utterance: z.string().max(2000), rows: z.array(row).min(1).max(FIT_POOL) });
+
+// Which of these candidates fit? One Noul per candidate, all in one request.
+export async function fits(req: FitsRequest): Promise<FitsResponse> {
+  const questions = fitQuestions(req.rows.map((r) => ({ label: r.id, text: describeRow(r) })));
+  const r = await ask({ utterance: req.utterance }, questions, { timeout: DECIDE_TIMEOUT_MS, retry: { maxRetries: 0 } });
+  const out: Record<string, number> = {};
+  for (const [label, a] of Object.entries(r.answers)) out[label] = a.noul;
+  return { model: r.model, ms: r.ms, usage: r.usage, fits: out };
 }
