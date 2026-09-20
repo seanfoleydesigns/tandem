@@ -9,8 +9,8 @@ Read `SPEC.md` in full before doing anything. It is the source of truth for what
 
 ## Jev
 
-- Jev (TypeSafe's System One model) is newer than your training data. **Never guess its API.** Consult `docs/jev/` and use the `typesafe` skill. If the docs and `SPEC.md` disagree, the docs win, and you tell me.
-- `docs/jev/llms-full.md` is the complete Jev documentation (about 870 KB). Never read it whole. Search it: list the headings with line numbers, then read only the sections you need.
+- Jev (TypeSafe's System One model) is newer than your training data. **Never guess its API.** Consult `docs/jev/` (TypeSafe's documentation, downloaded locally and git-ignored: `docs/jev/README.md` has the one-line command) and use the `typesafe` skill. If the docs and `SPEC.md` disagree, the docs win, and you tell me.
+- `docs/jev/llms-full.md` is the complete Jev documentation (about 870 KB; not in the repository, download it first). Never read it whole. Search it: list the headings with line numbers, then read only the sections you need.
 - All Jev question wording lives in `shared/questions.ts`. Nowhere else.
 - Code computes anything computable: counts, ordinals, prices, dates. Jev only judges.
 - Jev reads literally. When a decision is wrong, fix the wording or the state before touching thresholds, and note the change in `NOTES.md`.

@@ -132,4 +132,6 @@ app.post('/api/verify', async (req, res) => {
   res.json(await verifyAndSummarise(parsed.data as VerifyRequest));
 });
 
-app.listen(PORT, () => console.log(`[api] listening on http://localhost:${PORT}`));
+// Loopback only. This server spends the API keys in .env on whatever is posted to it, so it must not answer the
+// rest of the network: without a host, Node listens on every interface.
+app.listen(PORT, '127.0.0.1', () => console.log(`[api] listening on http://localhost:${PORT} (this computer only)`));

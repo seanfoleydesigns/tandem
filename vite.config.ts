@@ -53,6 +53,6 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     fs: { allow: [repo] },
-    proxy: { '/api': 'http://localhost:8787' },
+    proxy: { '/api': 'http://127.0.0.1:8787' }, // the API listens on loopback IPv4 only
   },
 });

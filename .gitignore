@@ -1,7 +1,45 @@
+# dependencies and build output
 node_modules
 dist
+extension/dist
+coverage
+*.tsbuildinfo
+
+# secrets: keys live in .env and nowhere else
 .env
 .env.*
 !.env.example
-.DS_Store
+*.pem
+*.crx
+
+# TypeSafe's documentation is theirs: download it locally (docs/jev/README.md), never commit it
+docs/jev/*
+!docs/jev/README.md
+
+# logs, traces, probe output
 *.log
+logs/
+traces/
+*.har
+/before.json
+/after.json
+
+# recordings, video, screenshots, archives
+recordings/
+screenshots/
+*.webm
+*.mp4
+*.mov
+*.mkv
+*.zip
+
+# Claude Code: the launch config is shared, local settings are not
+.claude/settings.local.json
+
+# OS and editors
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp

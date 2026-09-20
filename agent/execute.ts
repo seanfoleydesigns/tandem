@@ -140,6 +140,7 @@ export function type(
 }
 
 export function select(el: Element, option: HTMLOptionElement | undefined, overlay: Element, onReady?: OnReady): ExecResult {
+  if (isSensitive(el)) return { ok: false, reason: 'the agent never chooses in password or payment fields' };
   const check = ready(el, overlay, onReady);
   if (!check.ok) return check;
   const sel = el as HTMLSelectElement;

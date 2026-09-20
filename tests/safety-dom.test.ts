@@ -4,6 +4,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import * as exec from '../agent/execute';
 import { takeSnapshot } from '../agent/snapshot';
+import { candidates } from '../shared/candidates';
 import { asksFor } from '../shared/policy';
 
 beforeAll(() => {
@@ -35,6 +36,24 @@ describe('secrets', () => {
     expect(text).not.toContain('4242');
     expect(rows.find((r) => r.name === 'Password')).toMatchObject({ state: 'filled', sensitive: true });
     expect(rows.find((r) => r.name === 'Email')?.state).toBe('value: sean@example.com'); // ordinary fields still show their value
+  });
+
+  it('a payment dropdown is a payment field too: its choice and its options never leave the page, and it is never a target', () => {
+    const overlay = page('<form><label>Card type <select id="t" autocomplete="cc-type"><option>Visa</option><option selected>Amex</option></select></label><label>Expiry month <select id="m" autocomplete="cc-exp-month"><option>01</option><option selected>11</option></select></label><label>Country <select id="c"><option selected>Ireland</option><option>France</option></select></label></form>');
+    const snap = takeSnapshot({ overlay });
+    const text = JSON.stringify(snap.snapshot.rows);
+    expect(text).not.toContain('Amex');
+    expect(text).not.toContain('"11"');
+    expect(snap.snapshot.rows.find((r) => r.name === 'Card type')).toMatchObject({ state: 'filled', sensitive: true });
+    expect(snap.snapshot.rows.find((r) => r.name === 'Card type')?.options).toBeUndefined();
+    expect(snap.snapshot.rows.find((r) => r.name === 'Country')).toMatchObject({ state: 'selected: Ireland' }); // an ordinary dropdown is as before
+    const offered = candidates(snap.snapshot).select.map((s) => s.row.name);
+    expect(offered).toContain('Country');
+    expect(offered).not.toContain('Card type');
+    expect(offered).not.toContain('Expiry month');
+    const month = document.getElementById('m') as HTMLSelectElement;
+    expect(exec.select(month, month.options[0], overlay).ok).toBe(false);
+    expect(month.value).toBe('11');
   });
 
   it('refuses to type into one, whoever asks', () => {

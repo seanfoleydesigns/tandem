@@ -452,7 +452,7 @@ Sean's decisions going in: per-site grants instead of either of my two options; 
 - The fix is the project's rule applied once more: **exact matches are computable, so they are code's job**, as a correction. For an attribute the LLM itself returned, when its value is one of the page's options but the goal literally says a different one, and only that one, code puts the said one back (`correctAttributes`); the LLM keeps "trainers". My first version also ADDED attributes from any goal word that matched a link, and the review showed what that does off the shop: "find the article about business in china" became `category: Business, About`, and "the new iphone" matched News. After that: 3 runs of 3 end on Sneakers, DONE 0.98, and the gate's Nouls follow the page step by step (category 0.08, then 0.87 after the click, 0.92 at DONE; colour 0.04, 0.92).
 - The gate stays, as the backstop it was meant to be: unit tested, at most two refusals per task, then DONE is accepted and verify says what is off. The `unmet` sentence is in the operation question only when something is unmet.
 
-**Typing on the task leash.** TYPE is offered only with words that are not Jev's (the LLM's `search_query`, or a `typed_span` over the goal when the parse is unavailable), only into a search-like field that code picks, once per task for the same words. Through the real route on a Wikipedia-like page: TYPE 0.99 with a query; on the fallback TYPE 1.00 and typed_span "Alan Turing" 0.77; with nothing on offer Jev would have clicked a link (CLICK 0.89); after the search it opens the "Alan Turing" result. On the store Jev preferred the Brand filter to searching for "the Northfield Court Classic", which is a fair route there. `tests/questions-pinned.test.ts` holds the store's wording to what it was at 22ac82b when there is no query: written before I touched anything.
+**Typing on the task leash.** TYPE is offered only with words that are not Jev's (the LLM's `search_query`, or a `typed_span` over the goal when the parse is unavailable), only into a search-like field that code picks, once per task for the same words. Through the real route on a Wikipedia-like page: TYPE 0.99 with a query; on the fallback TYPE 1.00 and typed_span "Alan Turing" 0.77; with nothing on offer Jev would have clicked a link (CLICK 0.89); after the search it opens the "Alan Turing" result. On the store Jev preferred the Brand filter to searching for "the Northfield Court Classic", which is a fair route there. `tests/questions-pinned.test.ts` holds the store's wording to what it was at 2280cc4 (22ac82b before the history rewrite of 2026-09-20) when there is no query: written before I touched anything.
 
 Also: an ARIA combobox on a text input (Wikipedia's search box) is now a text field, not a dropdown; the verify summary no longer names individual results.
 
@@ -599,3 +599,61 @@ Written up, not fixed: one voice for the whole browser (a background tab's phras
 **Seen on Nike while measuring, not fixed:** the product grid is plain `div`s, not a list, and the only repeated groups the snapshot finds there are each card's colour swatches (nameless links), so "open the second one" has no ordinal to go by on that page. The "Men's Shoes" and "$215" rows under the stretched link are still refused (different name, no address of their own). 739 usable controls on the page, 134 near the viewport: under the cap.
 
 **Checked by me:** 352 unit tests, `tsc`, both bundles; the store by simulator on Sean's dev server (second one, go back, a search typed and submitted, the native sort, the hard-mode pop-up still dismissed before a click). "sort by price" in `?gym=hard` is still ignored: that is the custom listbox, a limit since step 2. **Not checked by me:** the click on nike.com in real Chrome; I cannot load the extension.
+
+## 2026-09-20 · Prepared for publication
+
+**Audit: start 18:51 · end 19:20. Fixes and documents: start 19:24 · End 19:49.** Not build time: nothing in the agent's behaviour changed except where the API listens.
+
+Sean is publishing the repository as an interview submission. He asked for two phases with a stop between them: an audit that changes nothing, then the fixes.
+
+**The audit (read-only).** `.env` is ignored and no path of that name was ever committed. A throwaway script outside the repository took the two key values from `.env` and searched for each whole value and its first and last 24 characters in every blob of every ref and the reflog (269), every commit message, and all 109 working-tree files including the ignored bundles: no hits; it prints hashes and paths only. Generic patterns (`sk-ant-`, `Bearer `, `KEY=` and a long value): nothing literal. No file over 1 MB, no images, recordings, HAR files, logs or transcripts, in the tree or in history: every path ever committed is `.ts .json .md .html .css`. No absolute local paths, no phone numbers, no email addresses other than fakes in tests. A second, independent sweep (3 auditors, a sceptic per finding, a completeness critic; 20 agents, 16 findings, none refuted) found nothing private either, and four things that mattered:
+
+- **Untracking a file does not unpublish it.** `docs/jev/llms-full.md`, TypeSafe's documentation, was in the very first commit, so every later commit carried it and a push would have put it one click away whatever the tip looked like.
+- **The API listened on every network interface.** `app.listen(PORT)` with no host: anyone on the same network could have spent the keys of whoever was running it, an interviewer included. The log line said "localhost", which is how it went unnoticed for fourteen commits.
+- "Node 20+" was wrong for the repository: the test runner needs 22.12 and jsdom 22.13.
+- A reflog-only commit, the first commit before it was amended minutes later, held two files from unrelated projects committed by mistake. `git push` could never have sent it; a zip of the folder would have.
+
+**History was rewritten once, before publication, on Sean's explicit instruction** (he had first forbidden any rewrite, and lifted that for this after the audit). `git filter-repo --invert-paths --path docs/jev/llms-full.md`, with an email callback that set the author and committer email of every commit to his GitHub no-reply address. Then the reflog was expired and the repository pruned, which also removed the pre-amend commit. Checked against a record taken before the rewrite: 14 commits before and after; author date, committer date, names and subject identical for all 14; every full message identical, the 13 `Co-Authored-By` lines included; every commit's tree identical apart from the one path; no commit touches the path any more; the old commit and blob ids no longer resolve; no unreachable objects. Hashes changed, all of them:
+
+| before | after | |
+|---|---|---|
+| 5c3376e | 3f1ca47 | Spec, project rules, Jev docs |
+| fd680f8 | db19068 | M0 |
+| 909630d | 555268e | M1 |
+| c719507 | a39cf61 | M2 |
+| 4d5b0c0 | 643ffde | M2: correct the end time |
+| e9be918 | 94ae7a2 | M3 |
+| 8807570 | badbeca | M3.1 |
+| 750feff | 433ccc9 | M3b |
+| 5e50381 | 616d506 | M4 |
+| 22ac82b | 2280cc4 | M5 steps 1 and 2 |
+| d9b3204 | 3eb6c96 | M5 step 3 |
+| 68e0479 | d130432 | M5 trial fix 1 |
+| 9e09d15 | 7f25136 | M5 trial fix 2 |
+| 86de96a | d9a411d | Stacked controls (Nike) |
+
+Only one commit hash is quoted anywhere in the repository (the pinned wording, in the M5 step 3 entry above, and `tests/questions-pinned.test.ts`); both places now give the old and the new id. A bundle of `master` as it was before the rewrite is in the coding session's scratch folder, outside the repository; it holds the old history including TypeSafe's file, and not the pre-amend commit. It is Sean's to delete.
+
+**What changed in the repository**
+
+- `server/index.ts`: the API listens on `127.0.0.1` only; the dev proxy names the same address. Checked with the server running: health answers on 127.0.0.1, on localhost and through the store's proxy, the LAN address is refused, and a drive command on the store still acts.
+- `package.json`: `engines.node >= 22.13`, licence, author, description; the lockfile's root entry regenerated to match, so `npm install` on a fresh clone leaves it clean. `LICENSE`: MIT, Sean Foley.
+- `.gitignore`: bundles, coverage, `.env*` except the example, `*.pem` and `*.crx` (Chrome's "Pack extension" writes a real private key beside `extension/`), everything under `docs/jev/` except its README, logs, traces, HAR files, probe output, recordings, video, screenshots, archives, `.claude/settings.local.json`, OS and editor files.
+- `docs/jev/README.md` says whose the documentation is and gives the one-line download (`https://docs.typesafe.ai/llms-full.txt`, checked: 200, about 896 KB). `CLAUDE.md` and `SPEC.md` point at it. The local copy is back in place, ignored.
+- `SPEC.md`, five spots that no longer matched the code: the last policy rule is 11, not a second 8; memory is tried once per group per page, not per task; the trace export was specified and never built (said so, twice); a superseded M4 acceptance line removed.
+- `README.md` rewritten for a reader who has never seen the project. Two places where it says something other than what Sean's outline assumed, because the record says otherwise: Node 22.13, not 20; and without the Anthropic key priced requests still work (code reads plain price limits, M4), what is lost is the parse into the page's vocabulary, the end check and the spoken summary.
+- Credits, as Sean stated them: no code from browser-use/jev-ultrafast was read or copied and the coding agent never opened it (its name appears in these sessions only where `SPEC.md` is read); Claude read its README during planning, and the spec borrowed three ideas.
+
+**Two notes on the times in this file**, for the README's table. The check of the spec against the Jev docs before M0 has no start and end above: the session opened at 13:10 and M0 started at 13:33. And trial fix 2's window (23:02 to 23:23) starts at Sean's OK: the design workflow behind it ran for about 31 minutes before that.
+
+**The review before the commit** (3 checks, a sceptic per problem, 24 agents; 13 problems confirmed, 4 refuted, about 9 distinct). A simulated fresh clone (the committed history plus these files, nothing ignored) installs with `npm ci`, typechecks, passes its tests and builds both bundles; both documented ways of copying `.env.example` work; without `.env` the dev server stops at once with ".env: not found". The rewrite was verified a second time, independently, against the bundle. What it caught:
+
+- *One real gap behind a sentence I had written as fact.* "A password or payment field is never read" was true of text fields only: a payment **dropdown** (`<select autocomplete="cc-exp-month">`, card type) was listed with its chosen value and all its options, offered to Jev as a target, and `select()` had no guard. Fixed in code rather than in the wording: such a row says "filled", carries no options, is never a candidate, and the executor refuses it; test in `tests/safety-dom.test.ts` (353 tests now).
+- *Wording that claimed more than the record:* "every acceptance check re-run after each change" (the simulator arrived with M2, and after the later fixes only the core store scenarios were re-run); workflows "from M5 on" (one ran before M0); the password snapshot "caught before it was committed" (the unguarded line had been there since M1; it was caught in the review of the commit that added the extension, before the agent ever ran on a real site); a test count NOTES never gave. The privacy paragraph left out that the page's status messages (live regions) are sent too.
+- The Node floor is 22.13, not 22.12 (jsdom); the lockfile's root entry did not match the edited `package.json`, so `npm install` would have dirtied a fresh clone; this entry's own end time was still a placeholder, for the second time in this file.
+
+Left for Sean before he pushes: the demo video link and the repository URL in the README are placeholders, and the two sentences in the README about his re-runs after the trial fixes are his to confirm.
+
+**Sean's reports after the two trial fixes, put on record here because they were only in the build conversation.** After trial fix 1 and its two-minute check in Chrome: "Worked great. Only issue I had was on YC's news page, it wouldn't search or click More" (which became trial fix 2). After trial fix 2 and its retest list: "Nice, I think everything is working well." No report was made after the Nike fix.
+
+**Skipped, on Sean's word:** a line-by-line list of his real-voice and real-Chrome results. The README says only what these notes and his reports during the build record, and names what has no recorded result.

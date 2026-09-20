@@ -21,12 +21,12 @@ export function candidates(snapshot: Snapshot): Candidates {
   const type: ElementRow[] = [];
   const select: SelectCandidate[] = [];
   for (const row of snapshot.rows) {
+    if (row.sensitive) continue; // a password or payment field, dropdowns included, is never a target
     if (row.options) {
       for (const o of row.options) {
         select.push({ label: `${row.id}_${o.id}`, rowId: row.id, optionId: o.id, row, optionLabel: o.label });
       }
-    } else if (row.sensitive) continue; // a password or payment field is never a target
-    else if (TEXT_ROLES.has(row.role)) type.push(row);
+    } else if (TEXT_ROLES.has(row.role)) type.push(row);
     else click.push(row);
   }
   return { click, type, select };

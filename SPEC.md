@@ -32,7 +32,7 @@ A voice-driven layer that sits on top of a web page and shares control of it wit
 
 ### Jev: read this before writing any Jev code
 
-Jev was released on 15 September 2026 and is newer than your training data. **Do not guess its API.** Sources of truth, in order: (1) the official docs saved in `docs/jev/`, (2) the installed `typesafe` skill, (3) this spec. If this spec conflicts with the docs, the docs win. Tell me when that happens.
+Jev was released on 15 September 2026 and is newer than your training data. **Do not guess its API.** Sources of truth, in order: (1) the official docs, downloaded into `docs/jev/` (not redistributed in this repository: see `docs/jev/README.md`), (2) the installed `typesafe` skill, (3) this spec. If this spec conflicts with the docs, the docs win. Tell me when that happens.
 
 What this spec assumes (verify each against the docs):
 
@@ -98,7 +98,7 @@ flowchart LR
 
 ```
 CLAUDE.md  SPEC.md  NOTES.md  README.md  .env  .env.example  .gitignore
-docs/jev/            official Jev docs, pasted in by me
+docs/jev/            official Jev docs: downloaded locally, git-ignored; README.md says how
 server/
   index.ts           routes: /api/health, /api/warm, /api/decide, /api/fits, /api/match, /api/slate, (M5) /api/dismiss, (M4) /api/parse, /api/verify
   jev.ts             SDK client; builds questions from shared/questions.ts
@@ -221,7 +221,7 @@ Send only what the questions need. Keep page text out of state unless it is a ro
 8. **The DONE gate (M5).** On the task leash, when the goal states attributes, DONE is accepted only if the page already shows every one of them: one Noul per attribute ("In `snapshot`, {value} is already applied for {name}: it is the current section, a checked or selected option, or the words already in the search field"), each at `MET_MIN` 0.75 or more. Otherwise the loop decides again with the missing ones listed in state as `unmet`, and only then does the operation question mention `unmet`. After `MAX_GATED_DONE` 2 refusals DONE is accepted and verify says what is off, so a wrong Noul cannot trap a task. Asking still comes first.
 9. **Typing on the task leash is for searching only (M5).** TYPE is offered only when there are words that are not Jev's: the LLM's `search_query`, or, when the parse was unavailable, a span of the goal chosen by a `typed_span` head. Only into a search-like field that code picks (role searchbox, which covers `type=search`, or a text field whose name, placeholder or label says search), once per task for the same words, and only that search form is submitted. With no query the store's questions are word for word what they were (`tests/questions-pinned.test.ts`).
 10. **Forms and secrets (M5), in code.** The agent never types into a password or payment field (`type=password`, `autocomplete` starting `cc-`), on either leash: such a field is listed but is never a target, and the executor refuses it. On the task leash a control that submits a form is pressed only when the goal literally names it ("…and then add to cart"); a search form is the one exception. The deny-list stays as it is.
-8. Otherwise act.
+11. Otherwise act. (Numbered 8 until M5 added rules 8 to 10; `NOTES.md` refers to it as rule 8 in the early entries.)
 
 Thresholds in `shared/config.ts`: `OP_MIN 0.5`, `TARGET_MIN 0.75` (raised from 0.5 in M2), `AMBIG_TOP 0.55`, `TASK_MIN 0.7`, `DICTATION_MIN 0.6`, `ASK_MIN 0.7`, `FIT_MIN 0.5`, `MAX_STEPS 25`, `MAX_TASK_MS 60000` (time spent waiting for the user does not count). Tune them with the inspector.
 
@@ -319,7 +319,7 @@ runLoop({ goal | utterance, leash }):
 - **Answer matching.** Code first: if the reply equals an option's name after normalising, that is the answer. Otherwise `POST /api/match`: state is `{ group, options, answer }`; one `choice` over the option labels plus `skip` ("it doesn't matter") and `unclear`. On `unclear`, pulse the chips and say "Tap one, or say it again." Two failures hand back. A tap on a chip or on Skip needs no model.
 - **Apply** the answer by acting on the matching control, then continue the loop.
 - **Remember.** Save `{ label, value, scope, ts }` to localStorage, scoped to the site's hostname. Answers to the agent's own questions are saved. A "Narrow by" answer is saved only when the group's *personal* Noul is at least `SAVE_MIN` (0.7): a size that must fit is remembered, a taste such as brand or colour never is. Skips are not saved. The memory panel lists preferences, each with a delete button.
-- **Memory is applied in code, before Jev is asked for the next operation.** At the start of every task step: if an unset group's label equals a saved preference's label (case-insensitive, bracketed suffixes ignored), act on the option whose name equals the saved value; if no name matches exactly, ask `/api/match` with the saved value as the answer. One attempt per group per task. The action trail says so ("Used your saved size: 10.5"), and no model call is made for it. Preferences still travel in the task-leash state so Jev can see them.
+- **Memory is applied in code, before Jev is asked for the next operation.** At the start of every task step: if an unset group's label equals a saved preference's label (case-insensitive, bracketed suffixes ignored), act on the option whose name equals the saved value; if no name matches exactly, ask `/api/match` with the saved value as the answer. One attempt per group per page (per task until M3.1: a product page has its own Size control, different from the listing's filter). The action trail says so ("Used your saved size: 10.5"), and no model call is made for it. Preferences still travel in the task-leash state so Jev can see them.
 - **Ask only what blocks progress.** Optional filters are never asked about. After hand-back, show "Narrow by:" chips built from the unset group labels; saying or tapping one makes the agent ask about that group, apply the answer, and stay in drive mode.
 - **While the agent drives**, speech is handled in this order: stop words (code), a reply to an open question, and nothing else ("still working").
 
@@ -342,7 +342,7 @@ Mounted in a shadow root, excluded from snapshots. States to implement; visual d
 | Question card | Title, option chips (tap or say), Skip |
 | Disambiguation | Badges "1" and "2" on the two candidates |
 | Memory panel | Saved preferences, deletable |
-| Inspector (press `i`) | Model id, timings, each head's top three probabilities, and the policy reason in words. "Download trace" exports the decision log as JSON |
+| Inspector (press `i`) | Model id, timings, each head's top three probabilities, and the policy reason in words. ("Download trace", a JSON export of the decision log, was specified here and never built.) |
 | Stop | Always visible while the agent drives; Esc does the same |
 
 ## 11. Demo store ("Footnote")
@@ -379,13 +379,12 @@ Work in order. One milestone at a time. Each ends with its acceptance checks run
 - *Confirm before spending.* In drive mode "check out" on the cart shows "Click Checkout?" with Yes and No; "no" leaves it alone, "yes" clicks, both handled in code. In task mode Checkout is still a hard hand-back ("This one's yours.").
 - *What is remembered.* A "Narrow by" answer is saved only when the group's personal score is high: Size is saved, Brand is not.
 
-**Wrap (15 min).** README with run steps and the architecture diagram; trace export works; `NOTES.md` tidy.
+**Wrap (15 min).** README with run steps and the architecture diagram; `NOTES.md` tidy. (Done. The trace export listed here originally was not built.)
 
 **Cut line: if M3 is not accepted by 2 h 30 min, skip M4 and wrap.**
 
 **M4 · LLM at the edges (30 min, only if on schedule).** `/api/parse` turns the goal into `Constraints { category?, colour?, max_price?, min_price?, search_query?, visual_prefs?[] }` as strict JSON, validated with zod, with a 4 s timeout and graceful fallback to no constraints; it runs in parallel with the clean-slate check. The agent says "On it" while parsing. Price logic lives in code (§8): numbers parsed out of option labels and card prices, an option selected only on an exact match, otherwise sort ascending and dim the cards outside the range; Jev is never offered the price group when a price constraint exists. `/api/verify` checks the final page digest and code-computed counts against the constraints and returns `{ ok, issues[], spoken }` with a spoken summary of 20 words or fewer. "Thinking" state in the frame. The inspector shows LLM latency and tokens next to Jev's.
 *Accept:* "find me white sneakers under a hundred dollars" ends on Sneakers, White and the saved size, with cards over $100 dimmed and a spoken summary with correct counts; "only the ones under a hundred and fifty" as a refinement keeps the filters and re-dims; drive-mode timings unchanged from M2 and no LLM request in drive mode (a test fails if there is one); with the key removed, the M3 hero scenario still passes.
-*Accept:* "white sneakers under a hundred dollars" ends with every visible result at $100 or less and a spoken summary; with the LLM key removed, everything from M3 still works.
 
 **M5 · Take it to the real web.** (Replaces the earlier stretch list; the vision pass is dropped.) The same agent runs on any website through a Chrome extension, survives page loads, and the README says honestly where it works and where it breaks. The store demo must keep working exactly as before.
 1. *De-shop the core.* Domain-neutral wording, generic `Constraints`, open shadow roots (section 8). Re-run the probes and the store acceptance; report every score that moves by more than 0.1.

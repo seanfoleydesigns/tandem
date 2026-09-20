@@ -54,7 +54,8 @@ function stateOf(el: Element, role: string): string | undefined {
     parts.push(checked ? 'checked' : 'unchecked');
   } else if (el.tagName === 'SELECT') {
     const select = el as HTMLSelectElement;
-    parts.push(`selected: ${clean(select.selectedOptions[0]?.textContent)}`);
+    // A payment dropdown (card type, expiry month) is a payment field too: what is chosen in it stays on the page.
+    parts.push(isSensitive(el) ? 'filled' : `selected: ${clean(select.selectedOptions[0]?.textContent)}`);
   } else if ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && input.value) {
     // What is typed into a password or payment field never leaves the page: the row says it is filled, no more.
     parts.push(isSensitive(el) ? 'filled' : `value: ${input.value.slice(0, 40)}`);
@@ -141,7 +142,7 @@ export function takeSnapshot(opts: { overlay: Element; focused?: Element | null;
     if (item.place !== 'visible') row.offscreen = item.place;
     if ((el as HTMLInputElement).required || el.getAttribute('aria-required') === 'true') row.required = true;
     if (isSensitive(el)) row.sensitive = true; // a password or payment field: listed, never a typing target
-    if (el.tagName === 'SELECT') {
+    if (el.tagName === 'SELECT' && !row.sensitive) { // a payment dropdown's options are neither listed nor offered
       row.options = Array.from((el as HTMLSelectElement).options)
         .filter((o) => !o.disabled)
         .map((o) => {

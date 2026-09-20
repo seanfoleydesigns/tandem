@@ -1,7 +1,13 @@
 {
   "name": "tandem",
   "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "version": "0.1.0",
+  "description": "Tandem: a voice browser copilot you can drive or delegate to. A time-boxed prototype built on TypeSafe Jev.",
+  "license": "MIT",
+  "author": "Sean Foley",
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n api,web -c blue,green \"npm:dev:api\" \"npm:dev:web\"",

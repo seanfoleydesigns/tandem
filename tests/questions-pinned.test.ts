@@ -1,5 +1,5 @@
 // The store's questions must stay word for word the same when a task has no search query and no unmet
-// attributes. The fixture was written from the wording as it stood at M5 step 2 (commit 22ac82b), before
+// attributes. The fixture was written from the wording as it stood at M5 step 2 (commit 2280cc4; it was 22ac82b before the history rewrite of 2026-09-20), before
 // typing on the task leash and the DONE gate were added. A deliberate rewording updates the fixture, with a
 // note in NOTES.md and a probe run; an accidental one fails here.
 import { readFileSync } from 'node:fs';
