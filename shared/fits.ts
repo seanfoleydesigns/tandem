@@ -2,12 +2,14 @@
 import { FIT_MIN, FIT_POOL } from './config';
 import type { ElementRow } from './types';
 
-// Candidates like the one the Choice preferred: same role and group. Always includes `must`.
+// Candidates like the one the Choice preferred: same role and group. Always includes `must`, INSIDE the cap: the
+// server refuses a longer list, and on a dense page (every Hacker News link is alike) the preferred row is rarely
+// among the first forty.
 export function fitPool(rows: ElementRow[], anchor: ElementRow, must: string[], cap: number = FIT_POOL): ElementRow[] {
   const alike = rows.filter((r) => must.includes(r.id) || (r.role === anchor.role && r.group === anchor.group));
   const visibleFirst = [...alike.filter((r) => !r.offscreen), ...alike.filter((r) => r.offscreen)];
-  const kept = new Set(visibleFirst.slice(0, cap).map((r) => r.id));
-  for (const id of must) kept.add(id);
+  const kept = new Set(must);
+  for (const r of visibleFirst) { if (kept.size >= cap) break; kept.add(r.id); }
   return rows.filter((r) => kept.has(r.id)); // reading order
 }
 

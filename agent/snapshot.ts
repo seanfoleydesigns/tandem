@@ -1,5 +1,6 @@
 // Observe: the page as a table of interactive elements, read once per cycle in one pass.
-import { MAX_ROWS } from '../shared/config';
+import { MAX_WIDE_ROWS } from '../shared/config';
+import { keepRows } from '../shared/keep';
 import { describeOrdinals, placement, type Placement, type Viewport } from '../shared/ordinals';
 import type { ElementRow, Snapshot } from '../shared/types';
 import { composedClosest, composedContains, composedParent, deepQueryAll } from './dom';
@@ -120,8 +121,9 @@ export function takeSnapshot(opts: { overlay: Element; focused?: Element | null;
     }
   }
 
-  // Rows: in or near the viewport (one viewport above or below), capped, in reading order.
-  const near = items.filter((i) => opts.wide || (i.bottom >= -vp.height && i.top <= 2 * vp.height)).slice(0, MAX_ROWS);
+  // Rows: in or near the viewport (one viewport above or below), capped, in reading order. Over the cap, what is
+  // on screen is kept first: a dense page must not lose the control the user is looking at.
+  const near = opts.wide ? items.slice(0, MAX_WIDE_ROWS) : keepRows(items.filter((i) => i.bottom >= -vp.height && i.top <= 2 * vp.height));
   const nodes = new Map<string, Element>();
   const options = new Map<string, HTMLOptionElement>();
   let focused: string | undefined;

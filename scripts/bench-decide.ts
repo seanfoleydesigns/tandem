@@ -1,5 +1,6 @@
 // Latency bench for /api/decide. Hits the running dev server, so it is a script, not a test.
-//   npx tsx scripts/bench-decide.ts            p50 of t2 − t1 at 40 / 80 / 120 rows, both label styles
+//   npx tsx scripts/bench-decide.ts            p50 of t2 − t1 at 40 / 80 / 120 / 180 / 240 rows, both label styles
+//   npx tsx scripts/bench-decide.ts --rows=180,240   only these row counts
 //   npx tsx scripts/bench-decide.ts --idle     also: cold connection versus warmed connection
 import products from '../store/src/data/products.json';
 import { describeOrdinals, type Placement } from '../shared/ordinals';
@@ -80,7 +81,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 console.log('rows  style      p50 ms  min  max   tokens in   operation  target  span');
 await call(40, 'described', 'scroll down'); // open the connection once; not counted
-for (const n of [40, 80, 120]) {
+const only = process.argv.find((a) => a.startsWith('--rows='))?.slice('--rows='.length).split(',').map(Number);
+for (const n of only ?? [40, 80, 120, 180, 240]) {
   for (const style of ['described', 'ids'] as const) {
     const ms: number[] = [];
     let tokens = 0;

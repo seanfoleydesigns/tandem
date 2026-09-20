@@ -522,3 +522,53 @@ Written up, not fixed: one voice for the whole browser (a background tab's phras
 **Limits written up, not fixed** (README, Known limits and Next steps, as Sean asked): a short deaf gap while a page loads; microphone permission is per site and goes to the site itself, not only to Tandem; only the visible tab listens. First under Next steps: move recognition into a page the extension owns (offscreen document or side panel). One honest caveat recorded there: offscreen documents have a `USER_MEDIA` reason, but the docs say nothing about speech recognition in one, and a permission prompt cannot be shown there, so it is a direction to prototype, not a promise.
 
 **Not verified by me:** all of it that needs Chrome's extension system: `chrome.tts` actually speaking, the events arriving, listening starting by itself, the permission states on real sites. The store still passes its simulator run with the page's voice, re-run after the review fixes: "scroll down" acted 378 ms after the final transcript (Jev 363 ms), the guard went up for "On it" and came down, mute pressed and released, and the priced hero asked for the size, saved 10.5 and ended "Found eight white shoes, four under a hundred dollars. Your turn." with four products dimmed. Sean has a two-minute check.
+
+## 2026-09-19 · M5, step 4, trial fix 2: dense pages
+
+**Start 23:02 · End 23:23** (the second and last trial fix; Sean's OK at 23:02, with two decisions: spend fix two on the row cap, and write the unlabelled Hacker News search box up as a limit.)
+
+**The pass line for the bench, written before running it** (`scripts/bench-decide.ts --rows=180,240`, store-shaped rows, 10 calls per cell). Today at 120 rows: p50 208 ms. For a row count to be accepted: p50 under 400 ms; no single call over 1,500 ms (the drive leash gives up at 2,500 ms and does not retry); operation 10/10, target 6/6, span 1/1, as at 120 rows. If 240 fails and 180 passes, the cap is 180. If 180 fails, stop and tell Sean.
+
+**What Sean saw.** On Hacker News, "click more" did nothing and the search did nothing, with both on screen in front of him. His guess: "maybe the bottom of the screen gets clipped off". Close: not the screen, the list.
+
+**Measured on the live pages** (my pane, his window size, 1860 x 950), before designing anything:
+
+- Hacker News front page, scrolled to the bottom: 227 usable controls, all 227 inside the snapshot's window (one viewport above, two below), **175 of them on screen at once**. The snapshot kept the first 120 in reading order and ended around story 16. "More" is row 218, the search box row 227. Jev was never shown either.
+- Wikipedia, top of the Alan Turing article: 2,550 usable controls on the page, 197 in the window, 128 on screen; on-screen rows 121 to 153 were cut. Mid-article: 123 and 45.
+- The demo store: about 60. That is why three milestones never met this.
+- The search box has a second, separate problem: `Search: <input type="text" name="q">`, no label, placeholder, aria-label or submit button; the word is loose text beside it.
+
+**The design** came out of a workflow Sean's ultracode setting asked for: four independent designs (geometry, what the user said, fewer and better rows, the unlabelled field), a sceptic on each, one synthesis; 9 agents, read-only. All four survived only with repairs, and the plan that went to Sean is simpler than any of them:
+
+- **One rule and one number.** `MAX_ROWS` 240. At or under it, every row near the viewport, in reading order, the very same array (so any page that had 120 or fewer is byte-identical, the store included). Over it, rows on screen first, then the rest, ties in reading order, and the kept rows still listed in reading order (`shared/keep.ts`, 5 lines, the same pattern as `shared/fits.ts`). Ordinals are still computed before the cut.
+- Why not a cleverer anchor at 120: 175 on screen is more than 120, so any anchor cuts 55 rows the user is looking at; a bottom anchor saves "More" and breaks "the first one".
+- Why 240: click_target is one Choice; the docs cap a Choice at 255 labels and call it reliable "up to roughly 240".
+- Why on-screen-first at all, when no measured page passes 240: Hacker News sits at 227. Without the rule the bug Sean reported comes back word for word at row 241.
+- Wide housekeeping snapshots (clean slate, digests, dimming, pop-ups) keep the first 120, exactly as before (`MAX_WIDE_ROWS`). The server's zod limit follows `MAX_ROWS`, in the same commit, or every dense page would have been a 400.
+- Rejected, with the sceptics' reasons: seating rows by the words the user said (five tiers and a stop list in front of the judge, and it still cut 13 on-screen rows on Wikipedia); dropping "filler" rows (the premise was false: `describeRow` prints group and state, so same-named buttons Jev can tell apart were classed as filler); a two-budget geometry with a page-end anchor (16 tests for pages no measurement reaches).
+
+**The bench, against the pass line above** (`scripts/bench-decide.ts --rows=120,180,240`, same session):
+
+| rows | style | p50 ms | min | max | tokens in | operation | target | span |
+|---|---|---|---|---|---|---|---|---|
+| 120 | described | 210 | 191 | 298 | 9,107 | 10/10 | 6/6 | 1/1 |
+| 180 | described | 259 | 220 | 276 | 14,501 | 10/10 | 6/6 | 1/1 |
+| 240 | described | 261 | 238 | 379 | 19,809 | 10/10 | 6/6 | 1/1 |
+| 240 | ids | 244 | 180 | 312 | 11,868 | 10/10 | 6/6 | 1/1 |
+
+240 passes every line, so the cap is 240. Doubling the rows cost 50 ms at the median. **Surprising about Jev:** latency is nearly flat in the size of the state: from 9k to 20k input tokens the median went up by 24%.
+
+**The real rows, not only store-shaped ones** (`scripts/probe-dense.ts`: fetches the Hacker News front page, builds its 227 rows, asks the running API): "click more" -> More, confidence 0.94; "click new" -> new, 0.86; "open the jobs page" -> jobs, 1.00; "scroll down" -> SCROLL_DOWN. About 8,700 input tokens, 224 to 480 ms. Thirty nameless upvote arrows and thirty "hide" links did not confuse it for these.
+
+**Jev wording:** untouched. `tests/questions-pinned.test.ts` still green.
+
+**The adversarial review** (2 finders with different lenses, one sceptic per finding, 8 agents): 6 findings, all confirmed, none refuted, 4 distinct. None was in the new rule itself; the useful ones were downstream of it.
+
+- *Fixed: an off-by-one from M2 that this change would have walked straight into.* `fitPool` kept the first 40 alike candidates and then added the preferred row on top, so whenever the preferred row was not among the first 40 it sent 41, the server (max 40) answered 400, and the fit check failed without a sound: two raw badges on the drive leash, "stuck" on a task. On the store that never happens (its groups are small). On Hacker News every link is alike (no headings, no groups), so every row past the fortieth link had it, and every row this fix newly admits, "More" included, is past the fortieth. The preferred row now takes its seat inside the cap; test with 227 alike rows and the anchor at rows 1, 40, 41 and 218.
+- *Corrected in the README:* my 8,700-token figure for Hacker News came from the probe's bare rows; the real snapshot adds an ordinal or an off-screen mark to about half of them, so roughly 10,000 to 12,000 (the reviewer's estimate; Sean reads the real number off the inspector).
+- *Written up, not fixed:* rows go to Jev twice under the `described` label style (once in the state, once as the label), so 240 long-named rows under long headings can pass the 32k budget, which 120 never could; every decision on such a page would then fail. Estimated, not measured; no measured page is near it (Hacker News about 10k, the bench about 20k). One reviewer offered a four-line fallback to the `ids` style over a character budget; the other advised against changing what Jev sees inside the time box, and the design round had already rejected a budget as guarding a case no measurement reaches. README has the sentence and the workaround (the inspector's label-style switch).
+- This entry itself, caught unfinished with its placeholder end time. Fair.
+
+**Written up, not fixed** (README, Sean's decision for the search box): the unlabelled search field (about ten lines, deliberately left out: a third fix, and it renames fields on every page); more than 240 controls near the viewport; housekeeping reading only the first 120; rows Jev cannot tell apart. The two hard-mode store failures (Size behind "More filters", the custom listbox sort) are now limits too: both fixes are spent.
+
+**Checked by me:** 337 unit tests, `tsc`, both bundles; the store by simulator on Sean's running dev server ("open the second one", "go back", "check white", then "find me black boots": cleared the old White filter, used the saved size 10.5, opened Boots, checked Black, DONE, verdict ok). **Not checked by me:** the extension in real Chrome. Sean retests "click more" on Hacker News from the bottom and from the top, "open the third one" there (Jev now sees all 30 stories instead of about 16), and a link low on the first screen of a Wikipedia article.

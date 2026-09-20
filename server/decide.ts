@@ -1,7 +1,7 @@
 import type { EntryType } from '@typesafe-ai/sdk';
 import { z } from 'zod';
 import { candidates, describeRow, rowLine } from '../shared/candidates';
-import { DECIDE_RETRIES, DECIDE_TIMEOUT_MS, FIT_POOL, LABEL_STYLE, MAX_BLOCKER_CONTROLS } from '../shared/config';
+import { DECIDE_RETRIES, DECIDE_TIMEOUT_MS, FIT_POOL, LABEL_STYLE, MAX_BLOCKER_CONTROLS, MAX_ROWS } from '../shared/config';
 import { flatConstraints } from '../shared/constraints';
 import { unsetGroups } from '../shared/groups';
 import {
@@ -32,7 +32,7 @@ export const decideRequest = z.object({
   pending: z.object({ group: z.string() }).optional(),
   snapshot: z.object({
     url: z.string(), title: z.string(), headings: z.array(z.string()), notices: z.array(z.string()),
-    rows: z.array(row).max(120), focused: z.string().optional(),
+    rows: z.array(row).max(MAX_ROWS), focused: z.string().optional(),
   }),
   asked: z.array(z.string()).optional(),
   labelStyle: z.enum(['described', 'ids']).optional(),

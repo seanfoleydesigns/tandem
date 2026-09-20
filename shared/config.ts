@@ -39,7 +39,10 @@ export const MAX_STEPS = 25;
 export const LEAVING_WAIT_MS = 10_000; // an action started a page load: wait for the page to go rather than decide on it
 export const MAX_TASK_MS = 60_000;
 
-export const MAX_ROWS = 120; // snapshot rows, in reading order
+// Snapshot rows near the viewport. At or under the cap: every row, in reading order. Over it: what is on screen
+// first (shared/keep.ts). click_target is one Choice: 255 labels is the hard cap, "reliable up to roughly 240".
+export const MAX_ROWS = 240;
+export const MAX_WIDE_ROWS = 120; // wide housekeeping snapshots: the first rows in reading order, as before
 export const MAX_SPANS = 200; // typed_span candidates, longest first (hard API cap is 255 labels)
 
 // Jev calls on the hot path fail fast instead of retrying.
