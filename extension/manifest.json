@@ -6,7 +6,7 @@
   "minimum_chrome_version": "116",
   "action": { "default_title": "Turn Tandem on for this tab" },
   "background": { "service_worker": "dist/background.js" },
-  "permissions": ["activeTab", "scripting", "storage"],
+  "permissions": ["activeTab", "scripting", "storage", "tts"],
   "host_permissions": ["http://localhost:8787/*"],
   "optional_host_permissions": ["<all_urls>"]
 }

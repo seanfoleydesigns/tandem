@@ -30,6 +30,13 @@ declare namespace chrome {
     function sendMessage(message: unknown): Promise<unknown>;
     const id: string | undefined;
   }
+  namespace tts {
+    type TtsEvent = { type: string; errorMessage?: string };
+    // enqueue defaults to FALSE: a new phrase would cut off the one being spoken.
+    function speak(utterance: string, options?: { enqueue?: boolean; rate?: number; lang?: string; onEvent?: (event: TtsEvent) => void }): Promise<void>;
+    function stop(): void; // stops the phrase being spoken and empties the queue, for the WHOLE extension, not one tab
+    function isSpeaking(): Promise<boolean>;
+  }
   namespace storage {
     type Area = { get(keys?: string | string[] | null): Promise<Record<string, unknown>>; set(items: Record<string, unknown>): Promise<void>; remove(keys: string | string[]): Promise<void> };
     const session: Area;

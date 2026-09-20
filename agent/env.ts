@@ -27,7 +27,16 @@ export type Env = {
   task: { save: (t: SavedTask) => void; clear: () => void };
   constraints: { save: (c: Constraints) => void }; // so that dimming survives a page load
   pageUrl: () => string; // what the snapshot reports as the page's address
+  // Speech output. A page speaks with speechSynthesis; the extension speaks from its worker with chrome.tts,
+  // because a freshly loaded page has had no user gesture and Chrome will not let it speak. `onStart` and `onEnd`
+  // drive the echo guard; `onEnd` is called exactly once, however the phrase ended, even if it never started.
+  speech: { speak: (text: string, on: SpeechEvents) => void; cancel: () => void };
+  // Whether the user has the microphone on, remembered beyond this page (the extension: per tab, in the worker).
+  mic: { save: (on: boolean) => void };
+  muted: { save: (on: boolean) => void }; // the same for the mute button
 };
+
+export type SpeechEvents = { onStart?: () => void; onEnd: () => void };
 
 const PREFS = 'tandem.prefs';
 
@@ -49,6 +58,20 @@ const page: Env = {
   task: { save() {}, clear() {} }, // the store navigates without reloading, and must behave exactly as before
   constraints: { save() {} },
   pageUrl: () => location.pathname + location.search, // our own demo store: its query string is its filters
+  speech: {
+    speak(text, on) {
+      if (!('speechSynthesis' in window)) return on.onEnd();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 1.05;
+      u.onstart = () => on.onStart?.();
+      u.onend = on.onEnd;
+      u.onerror = on.onEnd;
+      window.speechSynthesis.speak(u);
+    },
+    cancel() { window.speechSynthesis?.cancel(); },
+  },
+  mic: { save() {} }, // the store never reloads, so there is nothing to carry over
+  muted: { save() {} },
 };
 
 let current: Env = page;

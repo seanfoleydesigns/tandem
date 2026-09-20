@@ -8,7 +8,7 @@
 // Decisions are pure functions in state.ts; this file is the chrome.* plumbing around them.
 import type { SavedTask } from '../agent/env';
 import type { Constraints } from '../shared/types';
-import { API_BASE, badgeFor, hello, mayCallApi, OFF, onClick, onLoaded, originPattern, type TabState } from './state';
+import { API_BASE, badgeFor, hello, mayCallApi, maySpeak, OFF, onClick, onLoaded, originPattern, TTS_FINAL, type TabState } from './state';
 
 const key = (tabId: number) => `tab:${tabId}`;
 const read = async (tabId: number): Promise<TabState> => ((await chrome.storage.session.get(key(tabId)))[key(tabId)] as TabState | undefined) ?? OFF;
@@ -115,7 +115,12 @@ type Message =
   | { type: 'api'; path: string; body?: string }
   | { type: 'task:save'; task: SavedTask }
   | { type: 'task:clear' }
-  | { type: 'constraints:save'; constraints: Constraints };
+  | { type: 'constraints:save'; constraints: Constraints }
+  | { type: 'mic:save'; on: boolean }
+  | { type: 'muted:save'; on: boolean }
+  | { type: 'tts:speaking' }
+  | { type: 'tts:speak'; id: string; text: string }
+  | { type: 'tts:stop' };
 
 // One listener, not async (an async listener would answer every message with null), and `true` keeps the channel
 // open until sendResponse is called.
@@ -137,6 +142,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     })();
     return true;
   }
+  // Speech. A freshly loaded page has had no user gesture, and Chrome will not let it speak; the browser itself may.
+  // The phrase's start and its end (however it ends) go back to the tab, where they drive the echo guard.
+  if (msg.type === 'tts:speak') {
+    // In the queue, like a stop: a "stop" sent right after a phrase must not overtake it. speak() resolves as soon
+    // as the phrase is queued, not when it has been said, so it does not hold the queue.
+    void serial(async () => {
+      if (!maySpeak(await read(tabId), msg.text)) return sendResponse({ ok: false });
+      try {
+        await chrome.tts.speak(msg.text, {
+          enqueue: true, rate: 1.05, lang: 'en-US', // enqueue: "On it" must not be cut off by the question that follows it
+          onEvent: (e) => {
+            if (e.type === 'start' || TTS_FINAL.includes(e.type)) void chrome.tabs.sendMessage(tabId, { type: 'tts:event', id: msg.id, event: e.type === 'start' ? 'start' : 'end' }).catch(() => undefined);
+          },
+        });
+        sendResponse({ ok: true });
+      } catch {
+        sendResponse({ ok: false }); // no voice here: the page tries its own
+      }
+    }).catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+  if (msg.type === 'tts:stop') { void serial(async () => chrome.tts.stop()).catch(() => undefined).finally(() => sendResponse({ ok: true })); return true; }
+  // The voice outlives the page that asked for it. A page that has just loaded asks before it starts listening,
+  // or it would hear the end of the last page's phrase as a command.
+  if (msg.type === 'tts:speaking') { void chrome.tts.isSpeaking().then((speaking) => sendResponse({ speaking }), () => sendResponse({ speaking: false })); return true; }
   void serial(async () => {
     const s = await read(tabId);
     if (msg.type === 'hello') return sendResponse(hello(s, Date.now()));
@@ -144,6 +174,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (msg.type === 'task:save') await write(tabId, { ...s, task: msg.task });
     else if (msg.type === 'task:clear') await write(tabId, { ...s, task: undefined });
     else if (msg.type === 'constraints:save') await write(tabId, { ...s, constraints: msg.constraints });
+    else if (msg.type === 'mic:save') await write(tabId, { ...s, mic: !!msg.on });
+    else if (msg.type === 'muted:save') await write(tabId, { ...s, muted: !!msg.on });
     sendResponse({ ok: true });
   }).catch(() => sendResponse({ ok: false })); // always answer: an unanswered channel is an error on the other side
   return true;

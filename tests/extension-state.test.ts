@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { SavedTask } from '../agent/env';
-import { API_BASE, badgeFor, hello, mayCallApi, OFF, onClick, onLoaded, originPattern, RESUME_MS, type TabState } from '../extension/state';
+import { API_BASE, badgeFor, hello, mayCallApi, maySpeak, OFF, onClick, onLoaded, originPattern, RESUME_MS, TTS_FINAL, type TabState } from '../extension/state';
 
 const task = (ts: number): SavedTask => ({ goal: 'find the article about Alan Turing', constraints: { search_query: 'Alan Turing' }, history: [], asked: [], step: 2, parsed: true, ts });
 const ON: TabState = { on: true };
@@ -70,6 +70,38 @@ describe('page text leaves the browser only for a tab that is on, and only to th
   });
 });
 
+describe('voice across page loads: the mic and the voice belong to the tab, not to the page', () => {
+  it('the next page is told the mic was on, so it starts listening by itself', () => {
+    expect(hello({ on: true, mic: true }, 0)).toEqual({ on: true, mic: true });
+    expect(hello({ on: true, mic: false }, 0)).toEqual({ on: true });
+  });
+  it('listening and resuming are independent: a page can be told both, either, or neither', () => {
+    expect(hello({ on: true, mic: true, task: task(0) }, 1000)).toMatchObject({ on: true, mic: true, task: { step: 2 } });
+    expect(hello({ on: true, task: task(0) }, 1000)).toMatchObject({ on: true, task: { step: 2 } });
+  });
+  it('a paused tab is told nothing, and turning Tandem off forgets the mic', () => {
+    expect(hello({ on: true, paused: true, mic: true }, 0)).toEqual({ on: false });
+    expect(onClick({ on: true, mic: true }, true, 0).next).toEqual({ on: false, constraints: undefined });
+  });
+  it('mute is kept the same way: told to the next page, hidden while paused, forgotten when Tandem is turned off', () => {
+    expect(hello({ on: true, muted: true }, 0)).toEqual({ on: true, muted: true });
+    expect(hello({ on: true, paused: true, muted: true }, 0)).toEqual({ on: false });
+    expect(onClick({ on: true, muted: true }, true, 0).next.muted).toBeUndefined();
+    expect(onClick(onLoaded({ on: true, muted: true }, false, 10).next, true, 20).next).toMatchObject({ on: true, paused: false, muted: true });
+  });
+  it('the mic setting survives a pause on a site without access', () => {
+    const paused = onLoaded({ on: true, mic: true }, false, 10).next;
+    expect(onClick(paused, true, 20).next).toMatchObject({ on: true, paused: false, mic: true });
+  });
+  it('the browser speaks only for a tab that is on, and only short phrases', () => {
+    expect(maySpeak(ON, 'Your turn.')).toBe(true);
+    expect(maySpeak(OFF, 'Your turn.')).toBe(false);
+    expect(maySpeak({ on: true, paused: true }, 'Your turn.')).toBe(false);
+    for (const text of ['', 'x'.repeat(401), 42, undefined]) expect(maySpeak(ON, text)).toBe(false);
+  });
+  it('every way a phrase can end lowers the echo guard', () => expect(TTS_FINAL).toEqual(['end', 'interrupted', 'cancelled', 'error']));
+});
+
 describe('the badge', () => {
   it('says on, off when paused, and nothing when off', () => {
     expect(badgeFor(ON).text).toBe('on');
@@ -85,7 +117,7 @@ describe('the manifest', () => {
     expect(manifest.content_scripts).toBeUndefined();
     expect(manifest.host_permissions).toEqual([`${API_BASE}/*`]); // the same literal host the worker fetches
     expect(manifest.optional_host_permissions).toEqual(['<all_urls>']);
-    expect(manifest.permissions.sort()).toEqual(['activeTab', 'scripting', 'storage']); // no "tabs", no "webNavigation": no history warning
+    expect(manifest.permissions.sort()).toEqual(['activeTab', 'scripting', 'storage', 'tts']); // no "tabs", no "webNavigation": no history warning; "tts" shows none
     expect(manifest.action.default_popup).toBeUndefined(); // a popup would stop action.onClicked from firing
   });
 });

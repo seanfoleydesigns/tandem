@@ -1,6 +1,7 @@
 // Recognition, speech output and the echo guard. The recognizer and the dev simulator both feed
 // the same three handlers, so everything after this file is identical for real and simulated speech.
 import { ECHO_GUARD_MS } from '../shared/config';
+import { env } from './env';
 
 export type MicState = 'off' | 'listening' | 'paused' | 'unsupported' | 'denied';
 
@@ -33,9 +34,14 @@ export function createVoice(h: VoiceHandlers) {
   let speaking = 0; // phrases queued or being spoken; the guard lifts only when this reaches zero
   let restartDelay = 250;
 
+  const hidden = () => document.visibilityState === 'hidden';
+
   function start() {
     if (!Ctor) return h.onState('unsupported');
     if (rec || guard) return;
+    // Chrome runs one microphone recognition session for the whole browser. A tab nobody is looking at must not
+    // take it from the one in front, and commands belong to the page the user sees. It starts when it is shown.
+    if (hidden()) return h.onState('paused');
     const r: Recognition = new Ctor();
     r.continuous = true;
     r.interimResults = true;
@@ -59,11 +65,16 @@ export function createVoice(h: VoiceHandlers) {
     };
     r.onend = () => {
       rec = undefined;
-      if (wantOn && !guard) setTimeout(() => { if (wantOn && !guard) start(); }, restartDelay);
+      if (wantOn && !guard && !hidden()) setTimeout(() => { if (wantOn && !guard) start(); }, restartDelay);
     };
     rec = r;
     try { r.start(); h.onState('listening'); } catch { rec = undefined; }
   }
+
+  document.addEventListener('visibilitychange', () => {
+    if (!wantOn) return;
+    if (hidden()) { rec?.abort(); h.onState('paused'); } else if (!guard) start();
+  });
 
   function setGuard(on: boolean) {
     guard = on;
@@ -73,35 +84,53 @@ export function createVoice(h: VoiceHandlers) {
 
   return {
     supported: !!Ctor,
-    setMic(on: boolean) {
+    // `remember`: the user's own toggle is remembered beyond this page (the extension keeps it per tab, so the
+    // next page starts listening by itself). Stops the agent makes for its own reasons are not the user's choice.
+    setMic(on: boolean, opts: { remember?: boolean } = {}) {
       wantOn = on;
+      if (opts.remember !== false) env().mic.save(on);
       if (on) start();
       else { rec?.abort(); h.onState('off'); }
     },
-    setMuted(on: boolean) { muted = on; if (on) window.speechSynthesis?.cancel(); },
+    // Remembered like the mic. Restoring it on a new page cancels nothing: there, the only voice that could be
+    // speaking is somebody else's (the extension's voice is one for the whole browser).
+    setMuted(on: boolean, opts: { remember?: boolean } = {}) {
+      muted = on;
+      if (opts.remember === false) return;
+      env().muted.save(on);
+      if (on) env().speech.cancel();
+    },
     guarded: () => guard,
 
     // Short phrases only. Recognition pauses while speaking and for 250 ms after.
+    // The guard goes up the moment the agent decides to speak, and comes down ECHO_GUARD_MS after the engine says
+    // the phrase ended. Who speaks is the environment's business (agent/env.ts).
     speak(text: string) {
-      if (muted || !('speechSynthesis' in window)) return;
+      if (muted) return;
       setGuard(true);
       speaking += 1;
       let released = false;
+      let fallback: ReturnType<typeof setTimeout>;
       const release = () => {
         if (released) return;
         released = true;
+        clearTimeout(fallback);
         speaking -= 1;
         // "On it" and "Which size?" can queue back to back: never lift the guard between them.
         setTimeout(() => { if (speaking === 0) setGuard(false); }, ECHO_GUARD_MS);
       };
-      const u = new SpeechSynthesisUtterance(text);
-      u.rate = 1.05;
-      u.onend = release;
-      u.onerror = release;
-      setTimeout(release, 800 + text.length * 90); // some engines never fire onend
-      window.speechSynthesis.speak(u);
+      // Some engines never say they finished, and an end event can be lost: give up after the time the phrase
+      // should take, counted from when it really started if we are told.
+      const arm = () => {
+        // The phrase started after we had given up on it (it was queued behind a long one): guard it from its real start.
+        if (released) { released = false; speaking += 1; setGuard(true); }
+        clearTimeout(fallback);
+        fallback = setTimeout(release, 800 + text.length * 90);
+      };
+      arm();
+      env().speech.speak(text, { onStart: arm, onEnd: release });
     },
-    cancelSpeech() { window.speechSynthesis?.cancel(); },
+    cancelSpeech() { env().speech.cancel(); },
 
     // Dev simulator: the same path as the recognizer, echo guard included.
     async feed(text: string, opts: { interims?: string[]; interimGapMs?: number; finalDelayMs?: number } = {}): Promise<'heard' | 'dropped by echo guard'> {

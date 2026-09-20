@@ -12,6 +12,8 @@ export type TabState = {
   pausedAt?: number;
   task?: SavedTask;
   constraints?: Constraints; // the last task's, so price dimming survives a page load
+  mic?: boolean; // the user had the microphone on: the next page in this tab starts listening by itself
+  muted?: boolean; // the user muted the voice: the next page stays quiet too
 };
 
 export const OFF: TabState = { on: false };
@@ -54,11 +56,17 @@ export function onLoaded(s: TabState, urlVisible: boolean, now: number): { next:
 }
 
 // What the content script is told when it boots in a tab.
-export function hello(s: TabState, now: number): { on: boolean; task?: SavedTask; constraints?: Constraints } {
+export function hello(s: TabState, now: number): { on: boolean; task?: SavedTask; constraints?: Constraints; mic?: boolean; muted?: boolean } {
   const on = s.on && !s.paused;
   const fresh = on && s.task && now - s.task.ts < RESUME_MS ? s.task : undefined;
-  return { on, ...(fresh ? { task: fresh } : {}), ...(on && s.constraints ? { constraints: s.constraints } : {}) };
+  return { on, ...(fresh ? { task: fresh } : {}), ...(on && s.constraints ? { constraints: s.constraints } : {}), ...(on && s.mic ? { mic: true } : {}), ...(on && s.muted ? { muted: true } : {}) };
 }
+
+// Speech comes from the worker (chrome.tts), and only for a tab that is on: a page cannot make the browser talk.
+export const maySpeak = (s: TabState, text: unknown): text is string => s.on && !s.paused && typeof text === 'string' && text.length > 0 && text.length <= 400;
+
+// chrome.tts events that end a phrase. After any of them nothing more comes, so the echo guard may come down.
+export const TTS_FINAL = ['end', 'interrupted', 'cancelled', 'error'];
 
 // Page text leaves the browser only for tabs the user turned on, and only to the Tandem routes.
 export const mayCallApi = (s: TabState, path: unknown): path is string => s.on && !s.paused && typeof path === 'string' && /^\/api\/[a-z]+$/.test(path);

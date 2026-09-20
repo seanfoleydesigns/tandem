@@ -30,6 +30,7 @@ export type Overlay = {
   badges: (els: [Element, Element] | undefined, onTap?: (index: 0 | 1) => void) => void;
   setMode: (mode: Mode) => void;
   setMicState: (state: MicState) => void;
+  setMuted: (muted: boolean) => void; // show the mute button as pressed or not, without it having been clicked
   wave: () => void; // speech is arriving: move the waveform
   setBusy: (utterance: string) => void;
   showInterim: (text: string) => void;
@@ -188,11 +189,14 @@ export function mountOverlay(events: OverlayEvents, opts: { parent?: HTMLElement
   });
 
   mic.addEventListener('click', () => events.onMic(!(micState === 'listening' || micState === 'paused')));
-  mute.addEventListener('click', () => {
-    const muted = mute.getAttribute('aria-pressed') !== 'true';
+  const showMuted = (muted: boolean) => {
     mute.setAttribute('aria-pressed', String(muted));
     mute.setAttribute('aria-label', muted ? "Unmute Tandem's voice" : "Mute Tandem's voice");
     mute.innerHTML = muted ? ICONS.muted : ICONS.sound;
+  };
+  mute.addEventListener('click', () => {
+    const muted = mute.getAttribute('aria-pressed') !== 'true';
+    showMuted(muted);
     events.onMute(muted);
   });
   $('.stop').addEventListener('click', events.onStop);
@@ -296,6 +300,7 @@ export function mountOverlay(events: OverlayEvents, opts: { parent?: HTMLElement
       $('.stop').hidden = next === 'user';
       nameState();
     },
+    setMuted: showMuted,
     setMicState(state) {
       micState = state;
       mic.className = `icon mic ${state}`;

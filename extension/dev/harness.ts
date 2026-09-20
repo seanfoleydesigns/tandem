@@ -14,7 +14,7 @@ const read = (): TabState => JSON.parse(sessionStorage.getItem(TAB) ?? '{"on":tr
 const write = (s: TabState) => sessionStorage.setItem(TAB, JSON.stringify(s));
 const log: unknown[] = [];
 
-type Message = { type: string; path?: string; body?: string; task?: SavedTask; constraints?: Constraints };
+type Message = { type: string; path?: string; body?: string; task?: SavedTask; constraints?: Constraints; on?: boolean };
 async function worker(msg: Message): Promise<unknown> {
   const s = read();
   log.push(msg.type === 'api' ? `api ${msg.path}` : msg.type);
@@ -27,6 +27,10 @@ async function worker(msg: Message): Promise<unknown> {
   if (msg.type === 'task:save') write({ ...s, task: msg.task });
   else if (msg.type === 'task:clear') write({ ...s, task: undefined });
   else if (msg.type === 'constraints:save') write({ ...s, constraints: msg.constraints });
+  else if (msg.type === 'mic:save') write({ ...s, mic: !!msg.on });
+  else if (msg.type === 'muted:save') write({ ...s, muted: !!msg.on });
+  else if (msg.type === 'tts:speaking') return { speaking: false };
+  else if (msg.type === 'tts:speak' || msg.type === 'tts:stop') return { ok: false }; // no chrome.tts here: the page speaks
   return { ok: true };
 }
 
