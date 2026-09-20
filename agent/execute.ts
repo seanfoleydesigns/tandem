@@ -1,6 +1,7 @@
 // Act: click, type, select, scroll, back. Then wait for the page to settle.
 import { placement } from '../shared/ordinals';
-import { composedClosest, composedContains, deepElementFromPoint, openRoots } from './dom';
+import { composedClosest, composedContains, composedParent, deepElementFromPoint, openRoots } from './dom';
+import { accessibleName } from './name';
 
 export type ExecResult = { ok: boolean; reason?: string; coveredBy?: Element }; // coveredBy: what sits on top of the target
 
@@ -15,27 +16,59 @@ function onScreen(el: Element): boolean {
 }
 
 // Re-check the node just before acting: still connected, visible, and not covered by something else.
-function ready(el: Element, overlay: Element, onReady?: OnReady): ExecResult {
+// `through`: the target lies under another control that means the same thing; that one is what gets pressed.
+// Only a click may go through a twin: typing into, or choosing from, something under a same-named link is covered.
+function ready(el: Element, overlay: Element, onReady?: OnReady, allowTwin = false): ExecResult & { through?: Element } {
   if (!el.isConnected) return { ok: false, reason: 'the element is no longer on the page' };
   const r0 = el.getBoundingClientRect();
   if (r0.width === 0 && r0.height === 0) return { ok: false, reason: 'the element is not visible' };
-  // Off screen, or tucked under a sticky header: bring it to the middle of the viewport first.
-  if (!onScreen(el) || covering(el, overlay).blocked) el.scrollIntoView({ block: 'center', behavior: 'instant' });
+  // Off screen, or tucked under a sticky header: bring it to the middle of the viewport first. The same when a
+  // twin is on top: a stacked card's twin is still there afterwards, a sticky bar's same-named link is not.
+  const first = covering(el, overlay);
+  if (!onScreen(el) || first.blocked || first.through) el.scrollIntoView({ block: 'center', behavior: 'instant' });
   const cover = covering(el, overlay);
-  if (cover.blocked) return { ok: false, reason: 'the element is covered by something else', coveredBy: cover.by };
+  if (cover.blocked || (cover.through && !allowTwin)) return { ok: false, reason: 'the element is covered by something else', coveredBy: cover.by ?? cover.through };
   onReady?.(el.getBoundingClientRect(), parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0);
-  return { ok: true };
+  return { ok: true, ...(cover.through ? { through: cover.through } : {}) };
 }
 
 // Is the element the thing under its own centre point? The agent's overlay does not count. When it is not,
 // `by` is what covers it, so the loop can try to get a pop-up or banner out of the way.
-function covering(el: Element, overlay: Element): { blocked: boolean; by?: Element } {
+function covering(el: Element, overlay: Element): { blocked: boolean; by?: Element; through?: Element } {
   const r = el.getBoundingClientRect();
   const top = deepElementFromPoint(r.left + r.width / 2, r.top + r.height / 2, overlay); // goes down into open shadow roots
   if (!top) return { blocked: true };
   const labels = Array.from((el as HTMLInputElement).labels ?? []);
   const own = composedContains(el, top) || composedContains(top, el) || labels.some((l) => composedContains(l, top));
-  return own ? { blocked: false } : { blocked: true, by: top };
+  if (own) return { blocked: false };
+  const twin = sameControl(el, top);
+  return twin ? { blocked: false, through: twin } : { blocked: true, by: top };
+}
+
+// Real shops stack several controls for one thing on top of each other. A Nike product card is a link stretched
+// over the whole card, a second link to the same product around the picture, and the product's name as a third
+// "link" underneath; whichever one Jev names, another one is at its centre. That is not "covered by something
+// else": when what is on top is (inside) a link or button that goes to the same place, or, where destinations
+// cannot tell, has the same name, it is the same control, and the one a person's click at that spot would press.
+// Every rule upstream (deny-list, confirm card, submit rule, blockers) judged the TARGET, so the twin must not be
+// able to mean anything else: never across the edge of a pop-up or a sticky bar (that is a blocker, and the loop
+// must get its `coveredBy`), never a disabled control, never another form's submit button.
+function sameControl(el: Element, top: Element): Element | undefined {
+  const twin = composedClosest(top, 'a[href],button,[role=link],[role=button]');
+  if (!twin || twin === el) return undefined;
+  if ((twin as HTMLButtonElement).disabled || twin.getAttribute('aria-disabled') === 'true') return undefined;
+  if (submitsForm(twin) && (!submitsForm(el) || formOf(twin) !== formOf(el))) return undefined;
+  for (let n: Element | null = twin; n && n !== document.body && !composedContains(n, el); n = composedParent(n)) {
+    if (n.matches('dialog,[role=dialog],[role=alertdialog],[aria-modal="true"]') || /^(fixed|sticky)$/.test(getComputedStyle(n).position)) return undefined;
+  }
+  // A destination counts only when it goes somewhere: every href="#" on a page resolves to the same address.
+  const href = (e: Element) => {
+    const raw = e.tagName === 'A' ? (e.getAttribute('href') ?? '').trim() : '';
+    return !raw || raw.startsWith('#') || /^javascript:/i.test(raw) ? '' : (e as HTMLAnchorElement).href;
+  };
+  if (href(el) && href(twin)) return href(el) === href(twin) ? twin : undefined; // two real links: where they go decides, not what they are called
+  const name = (e: Element) => accessibleName(e).trim().toLowerCase();
+  return name(el) && name(el) === name(twin) ? twin : undefined;
 }
 
 const formOf = (el: Element): HTMLFormElement | null => (el as HTMLInputElement).form ?? (composedClosest(el, 'form') as HTMLFormElement | null);
@@ -69,8 +102,8 @@ export function isSensitive(el: Element): boolean {
 }
 
 export function click(el: Element, overlay: Element, onReady?: OnReady): ExecResult {
-  const check = ready(el, overlay, onReady);
-  if (check.ok) (el as HTMLElement).click();
+  const { through, ...check } = ready(el, overlay, onReady, true);
+  if (check.ok) ((through ?? el) as HTMLElement).click();
   return check;
 }
 

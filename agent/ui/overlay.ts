@@ -372,7 +372,7 @@ export function mountOverlay(events: OverlayEvents, opts: { parent?: HTMLElement
       $('.mem .count').textContent = prefs.length ? String(prefs.length) : '';
       panel.innerHTML = `<h2>Saved preferences</h2>${prefs.length
         ? `<ul>${prefs.map((p, i) => `<li><b>${esc(p.label)}</b> ${esc(p.value)} <button data-del="${i}" aria-label="Forget ${esc(p.label)} ${esc(p.value)}">Forget</button></li>`).join('')}</ul>`
-        : '<p>Nothing saved yet. I remember answers such as your size, never tastes like brand or colour.</p>'}`;
+        : '<p>Nothing saved for this site yet. When I have to ask you something only you can know, I remember the answer and do not ask again on this site.</p>'}`;
       panel.querySelectorAll<HTMLButtonElement>('[data-del]').forEach((b) =>
         b.addEventListener('click', () => onDelete(prefs[Number(b.dataset.del)]!.label)));
     },
