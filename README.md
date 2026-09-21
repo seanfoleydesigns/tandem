@@ -2,8 +2,6 @@
 
 A voice copilot for the web page in front of you. You can **drive** it ("scroll down", "open the second one") and it acts in about the time it takes Chrome to finish hearing you, or **delegate** to it ("find me white sneakers under a hundred dollars") and it works through the page by itself, asks when only you know the answer (your size), remembers what you told it, and hands the page back. On a task it never buys; when you are driving, anything that spends money needs a second, explicit yes.
 
-**Demo video: https://youtu.be/ac2HQzV5DpM** 
-
 > **Running it needs a TypeSafe API key, and TypeSafe's Jev model is in early access.** If you do not have one, the video is the demo; the rest of this page, `SPEC.md` and `NOTES.md` are the explanation. Everything below "Local setup" assumes a key.
 
 It is a time-boxed prototype, built on 19 and 20 September 2026. `SPEC.md` is the design I wrote before any code, `CLAUDE.md` is the rule file the coding agent worked under, `NOTES.md` is the build diary, including what broke, and `TRIAL.md` is the script for trying it on real sites.
